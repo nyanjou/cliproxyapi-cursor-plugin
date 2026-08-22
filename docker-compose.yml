@@ -4,7 +4,7 @@ services:
   cliproxyapi:
     # Example only: build an image that contains CLIProxyAPI plus the official Cursor Agent CLI.
     # Do not curl-pipe installers in production; inspect and pin the Cursor CLI installer/checksum first.
-    image: eceasy/cli-proxy-api:7.2.118
+    image: eceasy/cli-proxy-api:7.2.138
     pull_policy: missing
     container_name: cliproxyapi-cursor-dev
     restart: unless-stopped

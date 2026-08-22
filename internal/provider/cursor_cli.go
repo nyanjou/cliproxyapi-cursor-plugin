@@ -101,7 +101,11 @@ func (s *Service) runAgent(ctx context.Context, cfg Config, args []string, stdin
 	runCtx, cancel := context.WithTimeout(ctx, cfg.timeout())
 	defer cancel()
 	argv := expandWorkspaceArgs(args, workspace)
-	cmd := exec.CommandContext(runCtx, cfg.ExecutablePath, argv...)
+	exe, err := resolveAgentExecutable(cfg)
+	if err != nil {
+		return agentResult{}, statusError("cursor_agent_setup_required", "Cursor Agent CLI is not installed; open the Cursor setup page to install the official CLI", http.StatusPreconditionRequired)
+	}
+	cmd := exec.CommandContext(runCtx, exe, argv...)
 	cmd.Dir = workspace
 	cmd.Env = filteredEnv(cfg.EnvironmentAllowlist, login)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -34,25 +34,20 @@ go test ./...
 make build
 ```
 
-## Cursor CLI install inside a custom image
+## Cursor CLI setup inside CLIProxyAPI
 
-The compose file uses `eceasy/cli-proxy-api:7.2.118` as the base. For production, build a derived image that installs the official Cursor CLI with an inspected, pinned installer and checksum. Do not curl-pipe uninspected scripts. Confirm inside the image:
-
-```sh
-agent --version
-agent --help
-```
+The compose file uses `eceasy/cli-proxy-api:7.2.138` as the base and mounts `/cursor-home` persistently. Do not bake a curl-piped installer into the image. Start CLIProxyAPI, open the Cursor provider login flow, and if `agent` is absent the plugin returns the same-origin setup page. Press `Install official Cursor Agent CLI` only after reading the warning and entering the management key. The plugin then fetches and verifies the official package without executing shell installer code.
 
 ## Login
 
-After the image includes `agent`, authenticate the CLI in the mounted Cursor home volume:
+After setup succeeds, press Continue login or start the provider login again. The plugin runs `NO_OPEN_BROWSER=1 agent login`, exposes the Cursor approval URL promptly, and polling completes only after `agent status` confirms authentication. For manual fallback, authenticate in the mounted Cursor home volume with:
 
 ```sh
 docker compose --env-file .runtime/secrets.env run --rm cliproxyapi sh -lc 'NO_OPEN_BROWSER=1 agent login'
 docker compose --env-file .runtime/secrets.env run --rm cliproxyapi sh -lc 'agent status --format json && agent models'
 ```
 
-Only then start CLIProxyAPI:
+Then start or continue CLIProxyAPI:
 
 ```sh
 docker compose --env-file .runtime/secrets.env up -d

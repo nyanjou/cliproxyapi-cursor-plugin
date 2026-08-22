@@ -34,7 +34,11 @@ plugins:
     cliproxyapi-cursor:
       enabled: true
       priority: 100
-      executable_path: "/usr/local/bin/agent"
+      executable_path: "agent"
+      managed_install_root: "/cursor-home"
+      max_package_bytes: 268435456
+      max_expanded_bytes: 536870912
+      max_archive_entries: 10000
       # Parent only; each request gets a fresh 0700 child workspace that is cleaned up.
       workspace: "/var/lib/cliproxyapi-cursor/workspaces"
       model_prefix: "cursor/"

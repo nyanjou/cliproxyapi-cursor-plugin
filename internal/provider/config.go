@@ -14,21 +14,27 @@ import (
 const defaultAgentPath = "agent"
 
 type Config struct {
-	Enabled               bool     `yaml:"enabled" json:"enabled"`
-	ExecutablePath        string   `yaml:"executable_path" json:"executable_path"`
-	Workspace             string   `yaml:"workspace" json:"workspace"`
-	ModelPrefix           string   `yaml:"model_prefix" json:"model_prefix"`
-	AllowedModels         []string `yaml:"allowed_models" json:"allowed_models"`
-	DeniedModels          []string `yaml:"denied_models" json:"denied_models"`
-	ExcludedModelPrefixes []string `yaml:"excluded_model_prefixes" json:"excluded_model_prefixes"`
-	EnvironmentAllowlist  []string `yaml:"environment_allowlist" json:"environment_allowlist"`
-	TimeoutSeconds        int      `yaml:"timeout_seconds" json:"timeout_seconds"`
-	ModelCacheTTLSeconds  int      `yaml:"model_cache_ttl_seconds" json:"model_cache_ttl_seconds"`
-	MaxPromptBytes        int      `yaml:"max_prompt_bytes" json:"max_prompt_bytes"`
-	MaxRequestBytes       int      `yaml:"max_request_bytes" json:"max_request_bytes"`
-	MaxStdoutBytes        int      `yaml:"max_stdout_bytes" json:"max_stdout_bytes"`
-	MaxStderrBytes        int      `yaml:"max_stderr_bytes" json:"max_stderr_bytes"`
-	MaxConcurrent         int      `yaml:"max_concurrent" json:"max_concurrent"`
+	Enabled                bool     `yaml:"enabled" json:"enabled"`
+	ExecutablePath         string   `yaml:"executable_path" json:"executable_path"`
+	Workspace              string   `yaml:"workspace" json:"workspace"`
+	ModelPrefix            string   `yaml:"model_prefix" json:"model_prefix"`
+	AllowedModels          []string `yaml:"allowed_models" json:"allowed_models"`
+	DeniedModels           []string `yaml:"denied_models" json:"denied_models"`
+	ExcludedModelPrefixes  []string `yaml:"excluded_model_prefixes" json:"excluded_model_prefixes"`
+	EnvironmentAllowlist   []string `yaml:"environment_allowlist" json:"environment_allowlist"`
+	TimeoutSeconds         int      `yaml:"timeout_seconds" json:"timeout_seconds"`
+	ModelCacheTTLSeconds   int      `yaml:"model_cache_ttl_seconds" json:"model_cache_ttl_seconds"`
+	MaxPromptBytes         int      `yaml:"max_prompt_bytes" json:"max_prompt_bytes"`
+	MaxRequestBytes        int      `yaml:"max_request_bytes" json:"max_request_bytes"`
+	MaxStdoutBytes         int      `yaml:"max_stdout_bytes" json:"max_stdout_bytes"`
+	MaxStderrBytes         int      `yaml:"max_stderr_bytes" json:"max_stderr_bytes"`
+	MaxConcurrent          int      `yaml:"max_concurrent" json:"max_concurrent"`
+	ManagedInstallRoot     string   `yaml:"managed_install_root" json:"managed_install_root"`
+	InstallerURL           string   `yaml:"installer_url" json:"installer_url"`
+	TestPackageURLOverride string   `yaml:"test_package_url_override" json:"test_package_url_override"`
+	MaxPackageBytes        int      `yaml:"max_package_bytes" json:"max_package_bytes"`
+	MaxExpandedBytes       int      `yaml:"max_expanded_bytes" json:"max_expanded_bytes"`
+	MaxArchiveEntries      int      `yaml:"max_archive_entries" json:"max_archive_entries"`
 }
 
 func DefaultConfig() Config {
@@ -43,6 +49,10 @@ func DefaultConfig() Config {
 		MaxStdoutBytes:       2 * 1024 * 1024,
 		MaxStderrBytes:       64 * 1024,
 		MaxConcurrent:        1,
+		InstallerURL:         officialInstallerURL,
+		MaxPackageBytes:      256 * 1024 * 1024,
+		MaxExpandedBytes:     512 * 1024 * 1024,
+		MaxArchiveEntries:    10000,
 		EnvironmentAllowlist: []string{"HOME", "PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "NO_COLOR", "TERM"},
 	}
 }
@@ -93,6 +103,24 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if cfg.MaxConcurrent < 1 || cfg.MaxConcurrent > 8 {
 		return Config{}, fmt.Errorf("max_concurrent must be between 1 and 8")
+	}
+	cfg.ManagedInstallRoot = strings.TrimSpace(cfg.ManagedInstallRoot)
+	if cfg.ManagedInstallRoot != "" && !filepath.IsAbs(cfg.ManagedInstallRoot) {
+		return Config{}, fmt.Errorf("managed_install_root must be absolute")
+	}
+	cfg.InstallerURL = strings.TrimSpace(cfg.InstallerURL)
+	if cfg.InstallerURL == "" {
+		cfg.InstallerURL = officialInstallerURL
+	}
+	cfg.TestPackageURLOverride = strings.TrimSpace(cfg.TestPackageURLOverride)
+	if cfg.MaxPackageBytes <= 0 || cfg.MaxPackageBytes > 512*1024*1024 {
+		return Config{}, fmt.Errorf("max_package_bytes must be between 1 and 536870912")
+	}
+	if cfg.MaxExpandedBytes <= 0 || cfg.MaxExpandedBytes > 1024*1024*1024 {
+		return Config{}, fmt.Errorf("max_expanded_bytes must be between 1 and 1073741824")
+	}
+	if cfg.MaxArchiveEntries <= 0 || cfg.MaxArchiveEntries > 100000 {
+		return Config{}, fmt.Errorf("max_archive_entries must be between 1 and 100000")
 	}
 	return cfg, nil
 }

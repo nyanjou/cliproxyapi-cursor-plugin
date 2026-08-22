@@ -29,13 +29,17 @@ type Service struct {
 
 	loginMu sync.Mutex
 	logins  map[string]*loginSession
+
+	installMu sync.Mutex
 }
 
 type loginSession struct {
-	startedAt time.Time
-	expiresAt time.Time
-	output    string
-	done      bool
+	startedAt   time.Time
+	expiresAt   time.Time
+	output      string
+	approvalURL string
+	err         string
+	done        bool
 }
 
 func New(host transport.Host) *Service {

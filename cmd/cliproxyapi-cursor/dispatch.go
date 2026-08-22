@@ -12,7 +12,7 @@ import (
 )
 
 var pluginService = provider.New(hostTransport{})
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.2.0"
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -31,6 +31,7 @@ type registrationCapability struct {
 	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats  []string                     `json:"executor_input_formats"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats"`
+	ManagementAPI         bool                         `json:"management_api"`
 }
 
 type identifierResponse struct {
@@ -108,7 +109,7 @@ func dispatch(method string, request []byte) (any, error) {
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 			return nil, errUnmarshal
 		}
-		return pluginService.StartLogin(ctx, req.HostCallbackID)
+		return pluginService.StartLogin(ctx, req.HostCallbackID, req.AuthLoginStartRequest)
 	case pluginabi.MethodAuthLoginPoll:
 		var req rpcAuthLoginPollRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -149,6 +150,18 @@ func dispatch(method string, request []byte) (any, error) {
 			return nil, errUnmarshal
 		}
 		return pluginService.HTTP(ctx, req)
+	case pluginabi.MethodManagementRegister:
+		var req pluginapi.ManagementRegistrationRequest
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		return pluginService.RegisterManagement(ctx, req)
+	case pluginabi.MethodManagementHandle:
+		var req pluginapi.ManagementRequest
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		return pluginService.HandleManagement(ctx, req)
 	default:
 		return nil, &provider.StatusError{
 			Code:       "unknown_method",
@@ -186,6 +199,7 @@ func pluginRegistration() registration {
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:  []string{"openai-response", "openai-chat", "claude"},
 			ExecutorOutputFormats: []string{"openai-response", "openai-chat", "claude"},
+			ManagementAPI:         true,
 		},
 	}
 }

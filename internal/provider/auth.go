@@ -1,10 +1,18 @@
 package provider
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os/exec"
+	"regexp"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -33,24 +41,49 @@ func (s *Service) ParseAuth(req pluginapi.AuthParseRequest) (pluginapi.AuthParse
 	return pluginapi.AuthParseResponse{Handled: true, Auth: auth}, nil
 }
 
-func (s *Service) StartLogin(ctx context.Context, _ string) (pluginapi.AuthLoginStartResponse, error) {
+var cursorApprovalURLRE = regexp.MustCompile(`https://(?:www\.)?cursor\.com/[^\s"'<>]+`)
+
+func (s *Service) StartLogin(ctx context.Context, _ string, req pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
 	cfg := s.Config()
+	if _, err := resolveAgentExecutable(cfg); err != nil {
+		setup, setupErr := setupURLFromBase(req.BaseURL)
+		if setupErr != nil {
+			return pluginapi.AuthLoginStartResponse{}, setupErr
+		}
+		return pluginapi.AuthLoginStartResponse{Provider: providerID, URL: setup, State: "setup-required", ExpiresAt: s.now().Add(15 * time.Minute), Metadata: map[string]any{"setup_required": true, "message": "Install the official Cursor Agent CLI with explicit confirmation, then continue login."}}, nil
+	}
+	if st, err := s.statusStorage(ctx); err == nil && st.StatusKnown && st.Authenticated {
+		state := fmt.Sprintf("cursor-login-%d", s.now().UnixNano())
+		expires := s.now().Add(time.Minute)
+		s.loginMu.Lock()
+		s.logins[state] = &loginSession{startedAt: s.now(), expiresAt: expires, done: true}
+		s.loginMu.Unlock()
+		return pluginapi.AuthLoginStartResponse{Provider: providerID, State: state, ExpiresAt: expires, Metadata: map[string]any{"authenticated": true, "message": "Cursor CLI is already authenticated."}}, nil
+	}
 	state := fmt.Sprintf("cursor-login-%d", s.now().UnixNano())
 	expires := s.now().Add(15 * time.Minute)
+	urlCh := make(chan string, 1)
 	s.loginMu.Lock()
 	s.logins[state] = &loginSession{startedAt: s.now(), expiresAt: expires}
 	s.loginMu.Unlock()
-	// NO_OPEN_BROWSER=1 makes the official CLI print an approval URL/state. We capture only bounded stdout/stderr.
 	go func() {
-		out, _ := s.runAgent(ctx, cfg, []string{"login"}, nil, true)
+		out, err := s.runAgentLoginStreaming(ctx, cfg, state, urlCh)
 		s.loginMu.Lock()
 		if sess := s.logins[state]; sess != nil {
 			sess.output = strings.TrimSpace(string(out.Stdout))
+			if err != nil {
+				sess.err = err.Error()
+			}
 			sess.done = true
 		}
 		s.loginMu.Unlock()
 	}()
-	return pluginapi.AuthLoginStartResponse{Provider: providerID, State: state, ExpiresAt: expires, Metadata: map[string]any{"message": "Run NO_OPEN_BROWSER=1 agent login approval flow; poll for the printed URL/state."}}, nil
+	approval := ""
+	select {
+	case approval = <-urlCh:
+	case <-time.After(1200 * time.Millisecond):
+	}
+	return pluginapi.AuthLoginStartResponse{Provider: providerID, URL: approval, State: state, ExpiresAt: expires, Metadata: map[string]any{"approval_url": approval, "message": "Approve the Cursor URL, then polling will complete after the CLI reports authenticated."}}, nil
 }
 
 func (s *Service) PollLogin(ctx context.Context, _ string, state string) (pluginapi.AuthLoginPollResponse, error) {
@@ -64,17 +97,129 @@ func (s *Service) PollLogin(ctx context.Context, _ string, state string) (plugin
 		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: "Cursor login state expired"}, nil
 	}
 	if !sess.done {
-		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusPending, Message: "waiting for Cursor CLI login output"}, nil
+		if sess.approvalURL != "" {
+			return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusPending, Message: "Approve Cursor login URL: " + sess.approvalURL}, nil
+		}
+		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusPending, Message: "waiting for Cursor CLI login approval URL"}, nil
+	}
+	if sess.err != "" {
+		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: sess.err}, nil
 	}
 	st, err := s.statusStorage(ctx)
 	if err != nil {
 		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: err.Error()}, nil
+	}
+	if !st.StatusKnown || !st.Authenticated {
+		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusPending, Message: "Cursor login process exited, but authenticated status is not yet confirmed"}, nil
 	}
 	auth, err := s.authData(st, "")
 	if err != nil {
 		return pluginapi.AuthLoginPollResponse{}, err
 	}
 	return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusSuccess, Message: "Cursor CLI login available", Auth: auth}, nil
+}
+
+func (s *Service) runAgentLoginStreaming(ctx context.Context, cfg Config, state string, urlCh chan<- string) (agentResult, error) {
+	if !cfg.Enabled {
+		return agentResult{}, statusError("plugin_disabled", "Cursor plugin is disabled", http.StatusServiceUnavailable)
+	}
+	workspace, cleanup, err := invocationWorkspace(cfg.Workspace)
+	if err != nil {
+		return agentResult{}, err
+	}
+	defer cleanup()
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	case <-ctx.Done():
+		return agentResult{}, ctx.Err()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, cfg.timeout())
+	defer cancel()
+	exe, err := resolveAgentExecutable(cfg)
+	if err != nil {
+		return agentResult{}, err
+	}
+	cmd := exec.CommandContext(runCtx, exe, "login")
+	cmd.Dir = workspace
+	cmd.Env = filteredEnv(cfg.EnvironmentAllowlist, true)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return agentResult{}, err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return agentResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return agentResult{}, fmt.Errorf("start Cursor agent CLI: %w", err)
+	}
+	var stdout, stderr limitedBuffer
+	stdout.limit = cfg.MaxStdoutBytes
+	stderr.limit = cfg.MaxStderrBytes
+	var foundOnce sync.Once
+	consume := func(r io.Reader, buf *limitedBuffer) {
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 1024), 64*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			_, _ = buf.Write([]byte(line + "\n"))
+			if u := safeApprovalURL(line); u != "" {
+				foundOnce.Do(func() {
+					s.loginMu.Lock()
+					if sess := s.logins[state]; sess != nil {
+						sess.approvalURL = u
+					}
+					s.loginMu.Unlock()
+					select {
+					case urlCh <- u:
+					default:
+					}
+				})
+			}
+		}
+	}
+	doneRead := make(chan struct{}, 2)
+	go func() { consume(stdoutPipe, &stdout); doneRead <- struct{}{} }()
+	go func() { consume(stderrPipe, &stderr); doneRead <- struct{}{} }()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var waitErr error
+	select {
+	case waitErr = <-done:
+	case <-runCtx.Done():
+		killProcessGroup(cmd)
+		<-done
+		return agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}, statusError("cursor_timeout", "Cursor agent CLI login timed out", http.StatusGatewayTimeout)
+	}
+	<-doneRead
+	<-doneRead
+	res := agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}
+	if waitErr != nil {
+		msg := strings.TrimSpace(redactCursorError(string(res.Stderr)))
+		if msg == "" {
+			msg = strings.TrimSpace(redactCursorError(string(res.Stdout)))
+		}
+		return res, statusError("cursor_agent_error", "Cursor agent CLI login failed: "+msg, http.StatusBadGateway)
+	}
+	return res, nil
+}
+
+func safeApprovalURL(text string) string {
+	m := cursorApprovalURLRE.FindAllString(text, -1)
+	if len(m) != 1 {
+		return ""
+	}
+	u, err := url.Parse(m[0])
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	host := u.Hostname()
+	if host != "cursor.com" && host != "www.cursor.com" {
+		return ""
+	}
+	return u.String()
 }
 
 func (s *Service) RefreshAuth(ctx context.Context, _ string, req pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error) {

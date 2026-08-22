@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/snupai/cliproxyapi-cursor-plugin/internal/redact"
+	"github.com/nyanjou/cliproxyapi-cursor-plugin/internal/redact"
 )
 
 const workspaceArgPlaceholder = "{cliproxyapi-cursor-workspace}"

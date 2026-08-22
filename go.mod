@@ -1,4 +1,4 @@
-module github.com/snupai/cliproxyapi-cursor-plugin
+module github.com/nyanjou/cliproxyapi-cursor-plugin
 
 go 1.26.0
 

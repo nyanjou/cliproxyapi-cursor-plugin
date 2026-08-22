@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/nyanjou/cliproxyapi-cursor-plugin/internal/transport"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/snupai/cliproxyapi-cursor-plugin/internal/transport"
 )
 
 type hostTransport struct{}

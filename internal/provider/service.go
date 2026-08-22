@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/snupai/cliproxyapi-cursor-plugin/internal/transport"
+	"github.com/nyanjou/cliproxyapi-cursor-plugin/internal/transport"
 )
 
 const providerID = "cursor"

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nyanjou/cliproxyapi-cursor-plugin/internal/transport"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"github.com/snupai/cliproxyapi-cursor-plugin/internal/transport"
 	"github.com/tidwall/gjson"
 )
 

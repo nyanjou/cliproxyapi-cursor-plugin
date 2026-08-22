@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/nyanjou/cliproxyapi-cursor-plugin/internal/provider"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"github.com/snupai/cliproxyapi-cursor-plugin/internal/provider"
 )
 
 var pluginService = provider.New(hostTransport{})
@@ -164,8 +164,8 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             "Cursor Agent CLI provider",
 			Version:          pluginVersion,
-			Author:           "Snupai / Nyanjou; based on MIT-licensed arthur-sommer-etc cliproxyapi-copilot-plugin ABI scaffolding",
-			GitHubRepository: "https://github.com/snupai/cliproxyapi-cursor-plugin",
+			Author:           "Nyanjou; based on MIT-licensed arthur-sommer-etc cliproxyapi-copilot-plugin ABI scaffolding",
+			GitHubRepository: "https://github.com/nyanjou/cliproxyapi-cursor-plugin",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the Cursor Agent CLI-backed provider."},
 				{Name: "executable_path", Type: pluginapi.ConfigFieldTypeString, Description: "Path to the official Cursor Agent CLI executable (agent)."},

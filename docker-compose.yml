@@ -2,8 +2,8 @@ name: cliproxyapi-cursor-dev
 
 services:
   cliproxyapi:
-    # Example only: build an image that contains CLIProxyAPI plus the official Cursor Agent CLI.
-    # Do not curl-pipe installers in production; inspect and pin the Cursor CLI installer/checksum first.
+    # Example only: this image supplies CLIProxyAPI. Install the official Cursor Agent CLI
+    # later through the plugin's explicit-confirmation setup page, or preinstall it manually.
     image: eceasy/cli-proxy-api:7.2.138
     pull_policy: missing
     container_name: cliproxyapi-cursor-dev
@@ -19,7 +19,7 @@ services:
       - ./build/plugins:/CLIProxyAPI/plugins:ro
       - ./logs:/CLIProxyAPI/logs
       - cursor-agent-home:/cursor-home
-      - cursor-agent-workspace:/var/lib/cliproxyapi-cursor/workspace
+      - cursor-agent-workspace:/var/lib/cliproxyapi-cursor/workspaces
       - cliproxyapi-home:/root/.cli-proxy-api
     security_opt:
       - no-new-privileges:true

@@ -94,4 +94,4 @@ Mount only the Cursor auth/config volume needed by the official CLI and a privat
 
 ## Release workflow
 
-Tag format is semantic dotted numeric with `v` prefix, e.g. `v0.1.0`. The release workflow builds and publishes `cliproxyapi-cursor_<version>_linux_amd64.zip` and `checksums.txt`.
+Create and push a semantic tag such as `v0.1.0`, then run the **Release** workflow manually with that existing tag. The workflow validates the tag, checks out the tagged source, reruns tests, builds `cliproxyapi-cursor_<version>_linux_amd64.zip`, writes `checksums.txt`, and creates or safely replaces that tag's assets. CI is also manual or pull-request-only to avoid duplicate push/tag runs.

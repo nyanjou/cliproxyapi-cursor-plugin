@@ -24,7 +24,7 @@ import (
 
 const (
 	officialInstallerURL  = "https://cursor.com/install"
-	setupResourcePath     = "/v0/resource/plugins/cursor/setup"
+	setupResourcePath     = "/v0/resource/plugins/cliproxyapi-cursor/setup"
 	managementBasePath    = "/v0/management"
 	managementInstallPath = "/plugins/cursor/setup/install"
 	managementStatusPath  = "/plugins/cursor/setup/status"

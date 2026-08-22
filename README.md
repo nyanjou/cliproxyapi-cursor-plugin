@@ -25,7 +25,7 @@ Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-som
 - Caller-supplied tools/tool schemas are rejected. The plugin does not claim Claude Code-style external tool-call compatibility.
 - Image/file/audio attachments and mixed text+attachment requests are rejected before invoking Cursor; unsupported non-text content is never silently dropped.
 - Raw provider HTTP proxying is forbidden; this provider does not expose Cursor endpoints.
-- Authentication is the official Cursor CLI browser session. If `agent` is missing, login returns the same-origin `/v0/resource/plugins/cursor/setup` page instead of an exec error. Approval URLs may be shown; credentials, auth files, emails, and tokens must not be stored or logged by this plugin.
+- Authentication is the official Cursor CLI browser session. If `agent` is missing, login returns the same-origin `/v0/resource/plugins/cliproxyapi-cursor/setup` page instead of an exec error. Approval URLs may be shown; credentials, auth files, emails, and tokens must not be stored or logged by this plugin.
 
 ## Build and test
 
@@ -37,6 +37,8 @@ go test ./...
 go test -race ./...
 go vet ./...
 make build
+scripts/integration-cli-proxy-v72138.sh
+scripts/integration-cli-proxy-v72138.sh --full-install
 scripts/package-release.sh 0.2.0
 ```
 

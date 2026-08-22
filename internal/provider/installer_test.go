@@ -19,17 +19,35 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func TestStartLoginMissingAgentReturnsSameOriginSetupURL(t *testing.T) {
+func TestStartLoginMissingAgentReturnsActualExternalPluginSetupURL(t *testing.T) {
 	s := newTestService(t, filepath.Join(t.TempDir(), "missing-agent"))
 	resp, err := s.StartLogin(context.Background(), "", pluginapi.AuthLoginStartRequest{BaseURL: "https://proxy.example.test/ui/auth?next=https://evil.test"})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
-	if resp.URL != "https://proxy.example.test/v0/resource/plugins/cursor/setup" {
+	if resp.URL != "https://proxy.example.test/v0/resource/plugins/cliproxyapi-cursor/setup" {
 		t.Fatalf("setup URL = %q", resp.URL)
 	}
 	if resp.Metadata["setup_required"] != true {
 		t.Fatalf("metadata missing setup_required: %#v", resp.Metadata)
+	}
+}
+
+func TestManagementRegistrationUsesActualExternalPluginResourceBase(t *testing.T) {
+	s := newTestService(t, fakeAgent(t, `exit 0`))
+	reg, err := s.RegisterManagement(context.Background(), pluginapi.ManagementRegistrationRequest{ResourceBasePath: "/v0/resource/plugins/cliproxyapi-cursor", BasePath: "/v0/management/plugins/cursor"})
+	if err != nil {
+		t.Fatalf("RegisterManagement: %v", err)
+	}
+	if len(reg.Resources) != 1 || reg.Resources[0].Path != "/setup" {
+		t.Fatalf("resources = %#v", reg.Resources)
+	}
+	resource, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/cliproxyapi-cursor/setup"})
+	if err != nil {
+		t.Fatalf("resource HandleManagement: %v", err)
+	}
+	if resource.StatusCode != http.StatusOK || !strings.Contains(string(resource.Body), "Install official Cursor Agent CLI") {
+		t.Fatalf("resource response=%d %s", resource.StatusCode, resource.Body)
 	}
 }
 
@@ -74,7 +92,7 @@ exit 64
 
 func TestManagementRegistrationSeparatesResourceAndAuthenticatedInstall(t *testing.T) {
 	s := newTestService(t, fakeAgent(t, `exit 0`))
-	reg, err := s.RegisterManagement(context.Background(), pluginapi.ManagementRegistrationRequest{ResourceBasePath: "/v0/resource/plugins/cursor", BasePath: "/v0/management/plugins/cursor"})
+	reg, err := s.RegisterManagement(context.Background(), pluginapi.ManagementRegistrationRequest{ResourceBasePath: "/v0/resource/plugins/cliproxyapi-cursor", BasePath: "/v0/management/plugins/cursor"})
 	if err != nil {
 		t.Fatalf("RegisterManagement: %v", err)
 	}

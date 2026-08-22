@@ -36,7 +36,7 @@ make build
 
 ## Cursor CLI setup inside CLIProxyAPI
 
-The compose file uses `eceasy/cli-proxy-api:7.2.138` as the base and mounts `/cursor-home` persistently. Do not bake a curl-piped installer into the image. Start CLIProxyAPI, open the Cursor provider login flow, and if `agent` is absent the plugin returns the same-origin setup page. Press `Install official Cursor Agent CLI` only after reading the warning and entering the management key. The plugin then fetches and verifies the official package without executing shell installer code.
+The compose file uses `eceasy/cli-proxy-api:v7.2.138` as the base and mounts `/cursor-home` persistently. Do not bake a curl-piped installer into the image. Start CLIProxyAPI, open the Cursor provider login flow, and if `agent` is absent the plugin returns the same-origin setup page. Press `Install official Cursor Agent CLI` only after reading the warning and entering the management key. The plugin then fetches and verifies the official package without executing shell installer code.
 
 ## Login
 

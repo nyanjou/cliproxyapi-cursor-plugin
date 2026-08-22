@@ -58,6 +58,24 @@ type rpcAuthModelRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type rpcManagementRegistrationResponse struct {
+	Routes    []rpcManagementRoute `json:"routes,omitempty"`
+	Resources []rpcResourceRoute   `json:"resources,omitempty"`
+}
+
+type rpcManagementRoute struct {
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Menu        string `json:"menu,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type rpcResourceRoute struct {
+	Path        string `json:"path"`
+	Menu        string `json:"menu,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 func handleMethod(method string, request []byte) ([]byte, bool) {
 	result, errHandle := dispatch(method, request)
 	if errHandle != nil {
@@ -155,7 +173,11 @@ func dispatch(method string, request []byte) (any, error) {
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 			return nil, errUnmarshal
 		}
-		return pluginService.RegisterManagement(ctx, req)
+		reg, errRegister := pluginService.RegisterManagement(ctx, req)
+		if errRegister != nil {
+			return nil, errRegister
+		}
+		return rpcManagementRegistrationFromProvider(reg), nil
 	case pluginabi.MethodManagementHandle:
 		var req pluginapi.ManagementRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -169,6 +191,27 @@ func dispatch(method string, request []byte) (any, error) {
 			HTTPStatus: http.StatusNotImplemented,
 		}
 	}
+}
+
+func rpcManagementRegistrationFromProvider(reg pluginapi.ManagementRegistrationResponse) rpcManagementRegistrationResponse {
+	routes := make([]rpcManagementRoute, 0, len(reg.Routes))
+	for _, route := range reg.Routes {
+		routes = append(routes, rpcManagementRoute{
+			Method:      route.Method,
+			Path:        route.Path,
+			Menu:        route.Menu,
+			Description: route.Description,
+		})
+	}
+	resources := make([]rpcResourceRoute, 0, len(reg.Resources))
+	for _, resource := range reg.Resources {
+		resources = append(resources, rpcResourceRoute{
+			Path:        resource.Path,
+			Menu:        resource.Menu,
+			Description: resource.Description,
+		})
+	}
+	return rpcManagementRegistrationResponse{Routes: routes, Resources: resources}
 }
 
 func pluginRegistration() registration {

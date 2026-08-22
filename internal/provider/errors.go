@@ -1,9 +1,6 @@
 package provider
 
-import (
-	"fmt"
-	"net/http"
-)
+import "net/http"
 
 type StatusError struct {
 	Code       string
@@ -24,17 +21,4 @@ func statusError(code, message string, status int) error {
 		status = http.StatusInternalServerError
 	}
 	return &StatusError{Code: code, Message: message, HTTPStatus: status}
-}
-
-func upstreamStatusError(status int, detail string) error {
-	message := fmt.Sprintf("Cursor agent upstream returned HTTP %d", status)
-	if detail != "" {
-		message += ": " + detail
-	}
-	return &StatusError{
-		Code:       "upstream_error",
-		Message:    message,
-		HTTPStatus: status,
-		Retryable:  status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500,
-	}
 }

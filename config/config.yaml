@@ -35,7 +35,8 @@ plugins:
       enabled: true
       priority: 100
       executable_path: "/usr/local/bin/agent"
-      workspace: "/var/lib/cliproxyapi-cursor/workspace"
+      # Parent only; each request gets a fresh 0700 child workspace that is cleaned up.
+      workspace: "/var/lib/cliproxyapi-cursor/workspaces"
       model_prefix: "cursor/"
       allowed_models: []
       denied_models: []

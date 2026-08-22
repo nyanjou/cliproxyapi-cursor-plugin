@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -100,17 +99,98 @@ func (s *Service) statusStorage(ctx context.Context) (cursorAuthStorage, error) 
 			return st, err
 		}
 	}
-	var raw map[string]any
-	_ = json.Unmarshal(res.Stdout, &raw)
-	st.StatusKnown = true
-	st.Authenticated = true
-	if v, ok := raw["authenticated"].(bool); ok {
-		st.Authenticated = v
-	}
-	if v, ok := raw["loggedIn"].(bool); ok {
-		st.Authenticated = v
-	}
+	known, authenticated := parseCursorAuthStatus(res.Stdout)
+	st.StatusKnown = known
+	st.Authenticated = authenticated
 	return st, nil
+}
+
+func parseCursorAuthStatus(stdout []byte) (known bool, authenticated bool) {
+	text := strings.TrimSpace(string(stdout))
+	if text == "" {
+		return false, false
+	}
+	var raw any
+	if err := json.Unmarshal(stdout, &raw); err == nil {
+		return parseCursorAuthJSON(raw)
+	}
+	return parseCursorAuthText(text)
+}
+
+func parseCursorAuthJSON(v any) (known bool, authenticated bool) {
+	truths := []bool{}
+	var walk func(any)
+	walk = func(cur any) {
+		switch x := cur.(type) {
+		case map[string]any:
+			for k, vv := range x {
+				lk := strings.ToLower(strings.TrimSpace(k))
+				switch lk {
+				case "isauthenticated", "authenticated", "loggedin":
+					if b, ok := vv.(bool); ok {
+						truths = append(truths, b)
+					}
+				case "status":
+					if s, ok := vv.(string); ok {
+						if k, a := classifyAuthStatusString(s); k {
+							truths = append(truths, a)
+						}
+					}
+				}
+				walk(vv)
+			}
+		case []any:
+			for _, vv := range x {
+				walk(vv)
+			}
+		}
+	}
+	walk(v)
+	if len(truths) == 0 {
+		return false, false
+	}
+	first := truths[0]
+	for _, b := range truths[1:] {
+		if b != first {
+			return true, false
+		}
+	}
+	return true, first
+}
+
+func parseCursorAuthText(text string) (known bool, authenticated bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if k, a := classifyAuthStatusString(line); k {
+			return true, a
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "not logged in") || strings.Contains(lower, "not authenticated") || strings.Contains(lower, "unauthenticated") || strings.Contains(lower, "login required") {
+			return true, false
+		}
+		if lower == "logged in" || lower == "authenticated" || lower == "status: authenticated" || lower == "status: logged in" || lower == "isauthenticated: true" || lower == "authenticated: true" || lower == "loggedin: true" {
+			return true, true
+		}
+	}
+	return false, false
+}
+
+func classifyAuthStatusString(value string) (known bool, authenticated bool) {
+	s := strings.ToLower(strings.TrimSpace(value))
+	s = strings.Trim(s, `"'`)
+	s = strings.ReplaceAll(s, "_", "-")
+	s = strings.Join(strings.Fields(s), " ")
+	switch s {
+	case "authenticated", "logged-in", "logged in", "signed-in", "signed in", "ok", "true":
+		return true, true
+	case "unauthenticated", "not-authenticated", "not authenticated", "logged-out", "logged out", "not-logged-in", "not logged in", "signed-out", "signed out", "login-required", "login required", "false":
+		return true, false
+	default:
+		return false, false
+	}
 }
 
 func (s *Service) authData(st cursorAuthStorage, fileName string) (pluginapi.AuthData, error) {
@@ -119,8 +199,4 @@ func (s *Service) authData(st cursorAuthStorage, fileName string) (pluginapi.Aut
 		return pluginapi.AuthData{}, err
 	}
 	return pluginapi.AuthData{Provider: providerID, ID: "cursor-cli", FileName: fileName, Label: "Cursor Agent CLI", StorageJSON: b, Metadata: map[string]any{"status_known": st.StatusKnown, "authenticated": st.Authenticated}, Attributes: map[string]string{"boundary": "official-cursor-agent-cli", "secrets": "not-read-by-plugin"}, NextRefreshAfter: s.now().Add(5 * time.Minute)}, nil
-}
-
-func unsupportedAuth() error {
-	return statusError("unsupported_auth", "Cursor plugin uses the official Cursor Agent CLI browser-login session and does not parse or store secrets", http.StatusUnprocessableEntity)
 }

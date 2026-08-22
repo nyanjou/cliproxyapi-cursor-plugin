@@ -28,7 +28,8 @@ plugins:
       enabled: true
       priority: 100
       executable_path: "/usr/local/bin/agent"
-      workspace: "/var/lib/cliproxyapi-cursor/workspace"
+      # Parent only; the plugin creates and cleans a fresh 0700 child per invocation.
+      workspace: "/var/lib/cliproxyapi-cursor/workspaces"
       model_prefix: "cursor/"
       timeout_seconds: 120
       max_concurrent: 1
@@ -40,7 +41,7 @@ plugins:
       environment_allowlist: ["HOME", "PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "NO_COLOR", "TERM"]
 ```
 
-Use a dedicated empty workspace. Mount only the official Cursor CLI home/config volume needed for browser login.
+Use a dedicated workspace parent directory. The plugin creates a fresh 0700 empty child workspace for every invocation and removes it when the official agent exits. Mount only the official Cursor CLI home/config volume needed for browser login.
 
 ## Authentication
 

@@ -146,14 +146,6 @@ func (s *Service) resolveModel(ctx context.Context, requested string) (string, e
 	return "", statusError("model_not_found", "Cursor model is not present in `agent models` catalog", http.StatusNotFound)
 }
 
-func contains(values []string, target string) bool {
-	for _, v := range values {
-		if v == target {
-			return true
-		}
-	}
-	return false
-}
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {

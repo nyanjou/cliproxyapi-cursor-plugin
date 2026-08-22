@@ -35,7 +35,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:              true,
 		ExecutablePath:       defaultAgentPath,
-		Workspace:            filepath.Join(os.TempDir(), "cliproxyapi-cursor-workspace"),
+		Workspace:            filepath.Join(os.TempDir(), "cliproxyapi-cursor-workspaces"),
 		TimeoutSeconds:       120,
 		ModelCacheTTLSeconds: 600,
 		MaxPromptBytes:       512 * 1024,
@@ -63,7 +63,7 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	cfg.Workspace = strings.TrimSpace(cfg.Workspace)
 	if cfg.Workspace == "" {
-		return Config{}, fmt.Errorf("workspace is required")
+		cfg.Workspace = filepath.Join(os.TempDir(), "cliproxyapi-cursor-workspaces")
 	}
 	if !filepath.IsAbs(cfg.Workspace) {
 		return Config{}, fmt.Errorf("workspace must be an absolute path")

@@ -2,7 +2,7 @@
 
 Experimental v0.1.0 CLIProxyAPI provider for Cursor subscription models through the official `agent` CLI only.
 
-This is not a raw Cursor inference API wrapper. It preserves Cursor's official agent harness by spawning the authenticated `agent` executable with direct argv in print/ask mode, sandbox enabled, and a dedicated empty workspace. The plugin never calls Cursor private endpoints, never reads or stores OAuth material, never creates or uses `CURSOR_API_KEY`, and never invokes a shell for model requests.
+This is not a raw Cursor inference API wrapper. It preserves Cursor's official agent harness by spawning the authenticated `agent` executable with direct argv in print/ask mode, sandbox enabled, and a fresh private empty workspace per invocation. The plugin never calls Cursor private endpoints, never reads or stores OAuth material, never creates or uses `CURSOR_API_KEY`, and never invokes a shell for model requests.
 
 Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-sommer-etc/cliproxyapi-copilot-plugin`; Cursor-specific provider logic is separate and documented here.
 
@@ -12,7 +12,7 @@ Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-som
 - Auth provider status records for the existing browser-authenticated Cursor CLI session.
 - Model discovery via `agent models`.
 - Non-streaming OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages inputs converted to bounded text prompts for Cursor ask mode.
-- Streaming via `agent -p --output-format stream-json --stream-partial-output`, with duplicate partial suppression and terminal result/usage treated as canonical.
+- Streaming via `agent -p --output-format stream-json --stream-partial-output`, emitted to CLIProxyAPI as bare NDJSON (`application/x-ndjson`), with duplicate partial suppression and terminal result/usage treated as canonical.
 - Direct argv only, minimal environment allowlist, `CURSOR_API_KEY` stripping, process-group cancellation, stdout/stderr bounds, request/prompt bounds, runtime and concurrency limits.
 - Linux amd64 store package ZIP containing exactly `cliproxyapi-cursor.so` at archive root.
 
@@ -20,7 +20,7 @@ Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-som
 
 - Cursor runs as an agent harness with fixed context/tool overhead; usage numbers are best-effort values from the Cursor CLI terminal result when present.
 - Caller-supplied tools/tool schemas are rejected. The plugin does not claim Claude Code-style external tool-call compatibility.
-- Image/file/audio attachments are not forwarded to Cursor; unsupported non-text content should be treated as unsupported by clients.
+- Image/file/audio attachments and mixed text+attachment requests are rejected before invoking Cursor; unsupported non-text content is never silently dropped.
 - Raw provider HTTP proxying is forbidden; this provider does not expose Cursor endpoints.
 - Authentication is the official Cursor CLI browser session. Headless login should be done with `NO_OPEN_BROWSER=1 agent login`; approval URLs/states may be shown, credentials must not be stored by this plugin.
 
@@ -68,7 +68,9 @@ plugins:
     cliproxyapi-cursor:
       enabled: true
       executable_path: "/Users/snupai/.local/bin/agent"
-      workspace: "/tmp/cliproxyapi-cursor-workspace"
+      # Parent directory only. The plugin creates a new 0700 empty child
+      # workspace for each invocation and removes it when the agent exits.
+      workspace: "/tmp/cliproxyapi-cursor-workspaces"
       model_prefix: "cursor/"
       timeout_seconds: 120
       max_concurrent: 1
@@ -80,7 +82,7 @@ plugins:
       environment_allowlist: ["HOME", "PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "NO_COLOR", "TERM"]
 ```
 
-Mount only the Cursor auth/config volume needed by the official CLI and an empty workspace. Keep CLIProxyAPI loopback-only unless you intentionally put it behind your own authentication boundary.
+Mount only the Cursor auth/config volume needed by the official CLI and a private workspace parent directory. The configured `workspace` is not used directly for prompts; it is a parent for per-invocation 0700 empty directories that are cleaned up after use. Keep CLIProxyAPI loopback-only unless you intentionally put it behind your own authentication boundary.
 
 ## Existing deployment / rollback
 

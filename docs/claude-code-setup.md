@@ -7,7 +7,7 @@ This is a safe example for using `cliproxyapi-cursor` with CLIProxyAPI. It inten
 - Use only the official Cursor Agent CLI executable.
 - Do not set `CURSOR_API_KEY`; the plugin strips it from subprocess env.
 - Do not expose CLIProxyAPI publicly from this compose example; port binding is loopback only.
-- Keep Cursor CLI auth/config in its own mounted volume and requests in a dedicated empty workspace.
+- Keep Cursor CLI auth/config in its own mounted volume and requests in a dedicated workspace parent; the plugin creates a fresh private empty child workspace for each invocation.
 
 ## Prepare secrets/config
 

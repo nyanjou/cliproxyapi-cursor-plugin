@@ -13,9 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/snupai/cliproxyapi-cursor-plugin/internal/redact"
 )
+
+const workspaceArgPlaceholder = "{cliproxyapi-cursor-workspace}"
 
 type agentResult struct {
 	Stdout []byte
@@ -53,18 +56,42 @@ func ensureWorkspace(path string) error {
 		return fmt.Errorf("workspace must be an absolute path")
 	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
-		return fmt.Errorf("create Cursor workspace: %w", err)
+		return fmt.Errorf("create Cursor workspace root: %w", err)
+	}
+	return chmodPrivate(path)
+}
+
+func chmodPrivate(path string) error {
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("secure Cursor workspace permissions: %w", err)
 	}
 	return nil
+}
+
+func invocationWorkspace(root string) (string, func(), error) {
+	if err := ensureWorkspace(root); err != nil {
+		return "", nil, err
+	}
+	dir, err := os.MkdirTemp(root, "invocation-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create isolated Cursor invocation workspace: %w", err)
+	}
+	if err := chmodPrivate(dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 func (s *Service) runAgent(ctx context.Context, cfg Config, args []string, stdin []byte, login bool) (agentResult, error) {
 	if !cfg.Enabled {
 		return agentResult{}, statusError("plugin_disabled", "Cursor plugin is disabled", http.StatusServiceUnavailable)
 	}
-	if err := ensureWorkspace(cfg.Workspace); err != nil {
+	workspace, cleanup, err := invocationWorkspace(cfg.Workspace)
+	if err != nil {
 		return agentResult{}, err
 	}
+	defer cleanup()
 	select {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
@@ -73,9 +100,9 @@ func (s *Service) runAgent(ctx context.Context, cfg Config, args []string, stdin
 	}
 	runCtx, cancel := context.WithTimeout(ctx, cfg.timeout())
 	defer cancel()
-	argv := append([]string(nil), args...)
+	argv := expandWorkspaceArgs(args, workspace)
 	cmd := exec.CommandContext(runCtx, cfg.ExecutablePath, argv...)
-	cmd.Dir = cfg.Workspace
+	cmd.Dir = workspace
 	cmd.Env = filteredEnv(cfg.EnvironmentAllowlist, login)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if stdin != nil {
@@ -92,28 +119,56 @@ func (s *Service) runAgent(ctx context.Context, cfg Config, args []string, stdin
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	err := <-done
-	if runCtx.Err() != nil {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	var waitErr error
+	select {
+	case waitErr = <-done:
+	case <-runCtx.Done():
+		killProcessGroup(cmd)
+		select {
+		case waitErr = <-done:
+		case <-time.After(2 * time.Second):
+			return agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}, statusError("cursor_timeout", "Cursor agent CLI timed out and process group did not exit promptly", http.StatusGatewayTimeout)
 		}
-		return agentResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, statusError("cursor_timeout", "Cursor agent CLI timed out", http.StatusGatewayTimeout)
+		_ = waitErr
+		return agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}, statusError("cursor_timeout", "Cursor agent CLI timed out", http.StatusGatewayTimeout)
 	}
 	res := agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}
 	if stdout.truncated {
 		return res, statusError("cursor_stdout_limit", "Cursor agent CLI stdout exceeded configured limit", http.StatusBadGateway)
 	}
-	if err != nil {
+	if waitErr != nil {
 		msg := strings.TrimSpace(redactCursorError(string(res.Stderr)))
 		if msg == "" {
 			msg = strings.TrimSpace(redactCursorError(string(res.Stdout)))
 		}
 		if msg == "" {
-			msg = err.Error()
+			msg = waitErr.Error()
 		}
 		return res, statusError("cursor_agent_error", "Cursor agent CLI failed: "+msg, http.StatusBadGateway)
 	}
 	return res, nil
+}
+
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err == nil && pgid > 0 {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return
+	}
+	_ = cmd.Process.Kill()
+}
+
+func expandWorkspaceArgs(args []string, workspace string) []string {
+	out := append([]string(nil), args...)
+	for i, arg := range out {
+		if arg == workspaceArgPlaceholder {
+			out[i] = workspace
+		}
+	}
+	return out
 }
 
 func filteredEnv(allow []string, login bool) []string {
@@ -148,8 +203,8 @@ func redactCursorError(text string) string {
 	return text
 }
 
-func cursorPromptArgs(cfg Config, model, format string, stream bool, prompt string) []string {
-	args := []string{"-p", "--trust", "--mode", "ask", "--sandbox", "enabled", "--workspace", cfg.Workspace, "--model", model, "--output-format", format}
+func cursorPromptArgs(_ Config, model, format string, stream bool, prompt string) []string {
+	args := []string{"-p", "--trust", "--mode", "ask", "--sandbox", "enabled", "--workspace", workspaceArgPlaceholder, "--model", model, "--output-format", format}
 	if stream {
 		args = append(args, "--stream-partial-output")
 	}
@@ -157,38 +212,107 @@ func cursorPromptArgs(cfg Config, model, format string, stream bool, prompt stri
 	return args
 }
 
-func hasUnsupportedTools(raw []byte) bool {
-	var v any
-	if len(raw) == 0 || json.Unmarshal(raw, &v) != nil {
-		return false
-	}
-	return containsJSONKey(v, "tools") || containsJSONKey(v, "tool_choice")
+var unsupportedToolKeys = map[string]struct{}{
+	"tools": {}, "functions": {}, "tool_choice": {}, "tool_calls": {}, "function_call": {},
+	"tool_use": {}, "tool_result": {}, "server_tool_use": {}, "parallel_tool_calls": {},
 }
 
-func containsJSONKey(v any, key string) bool {
+func validateRequestPayload(raw []byte) error {
+	if len(raw) == 0 {
+		return statusError("invalid_request", "request body is required", http.StatusBadRequest)
+	}
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return statusError("invalid_request", "request body must be JSON", http.StatusBadRequest)
+	}
+	if key, ok := findUnsupportedToolShape(v); ok {
+		return statusError("unsupported_tools", fmt.Sprintf("Cursor Agent CLI provider does not support external tool/function request field %q", key), http.StatusUnprocessableEntity)
+	}
+	if why, ok := findUnsupportedContent(v); ok {
+		return statusError("unsupported_content", why, http.StatusUnprocessableEntity)
+	}
+	return nil
+}
+
+func findUnsupportedToolShape(v any) (string, bool) {
 	switch x := v.(type) {
 	case map[string]any:
-		if _, ok := x[key]; ok {
-			return true
+		if typ, _ := x["type"].(string); typ != "" {
+			lk := strings.ToLower(strings.TrimSpace(typ))
+			if _, ok := unsupportedToolKeys[lk]; ok || strings.HasPrefix(lk, "mcp_tool_") {
+				return "type:" + typ, true
+			}
 		}
-		for _, vv := range x {
-			if containsJSONKey(vv, key) {
-				return true
+		for k, vv := range x {
+			lk := strings.ToLower(k)
+			if _, ok := unsupportedToolKeys[lk]; ok || strings.HasPrefix(lk, "mcp_tool_") {
+				return k, true
+			}
+			if key, ok := findUnsupportedToolShape(vv); ok {
+				return key, true
 			}
 		}
 	case []any:
 		for _, vv := range x {
-			if containsJSONKey(vv, key) {
-				return true
+			if key, ok := findUnsupportedToolShape(vv); ok {
+				return key, true
 			}
 		}
 	}
-	return false
+	return "", false
+}
+
+func findUnsupportedContent(v any) (string, bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		if reason, bad := unsupportedContentMap(x); bad {
+			return reason, true
+		}
+		for _, vv := range x {
+			if reason, ok := findUnsupportedContent(vv); ok {
+				return reason, true
+			}
+		}
+	case []any:
+		for _, vv := range x {
+			if reason, ok := findUnsupportedContent(vv); ok {
+				return reason, true
+			}
+		}
+	}
+	return "", false
+}
+
+func unsupportedContentMap(m map[string]any) (string, bool) {
+	for _, key := range []string{"attachments", "attachment", "image_url", "input_image", "input_file", "file", "file_data", "audio", "input_audio"} {
+		if _, ok := m[key]; ok {
+			return "Cursor Agent CLI provider supports text-only requests and rejects attachments/images/files/audio before invocation", true
+		}
+	}
+	if typ, _ := m["type"].(string); typ != "" {
+		n := strings.ToLower(strings.TrimSpace(typ))
+		switch n {
+		case "text", "input_text", "output_text", "message", "system", "user", "assistant", "developer":
+			return "", false
+		}
+		if strings.Contains(n, "image") || strings.Contains(n, "file") || strings.Contains(n, "audio") || strings.Contains(n, "attachment") || strings.Contains(n, "document") || strings.Contains(n, "media") {
+			return "Cursor Agent CLI provider supports text-only requests and rejects non-text content parts before invocation", true
+		}
+	}
+	if mt, _ := m["mime_type"].(string); mt != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mt)), "text/") {
+		return "Cursor Agent CLI provider supports text-only MIME parts only", true
+	}
+	if mt, _ := m["media_type"].(string); mt != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mt)), "text/") {
+		return "Cursor Agent CLI provider supports text-only media parts only", true
+	}
+	return "", false
 }
 
 func promptFromRequest(format string, raw []byte) (string, error) {
-	if len(raw) == 0 {
-		return "", statusError("invalid_request", "request body is required", http.StatusBadRequest)
+	if err := validateRequestPayload(raw); err != nil {
+		return "", err
 	}
 	var root any
 	if err := json.Unmarshal(raw, &root); err != nil {
@@ -207,9 +331,6 @@ func promptFromRequest(format string, raw []byte) (string, error) {
 func collectPrompt(b *strings.Builder, v any, role string) {
 	switch x := v.(type) {
 	case map[string]any:
-		if t, _ := x["type"].(string); strings.Contains(strings.ToLower(t), "image") || strings.Contains(strings.ToLower(t), "file") {
-			return
-		}
 		if r, _ := x["role"].(string); r != "" {
 			role = r
 		}
@@ -293,7 +414,7 @@ func cursorText(raw map[string]any) string {
 				if m == nil {
 					continue
 				}
-				if typ, _ := m["type"].(string); typ != "" && typ != "text" {
+				if typ, _ := m["type"].(string); typ != "" && typ != "text" && typ != "output_text" {
 					continue
 				}
 				if s, _ := m["text"].(string); s != "" {
@@ -321,7 +442,7 @@ func responsePayload(format, model, text string, usage map[string]any, created i
 
 func event(payload any) []byte {
 	raw, _ := json.Marshal(payload)
-	return append(append([]byte("data: "), raw...), '\n', '\n')
+	return append(raw, '\n')
 }
 
 func (s *Service) emitStreamLine(ctx context.Context, host outputHost, streamID, format, model string, created int64, text string, final bool, usage map[string]any) error {
@@ -377,7 +498,7 @@ func streamCursorJSON(ctx context.Context, host outputHost, streamID, format, mo
 		}
 	}
 	if terminal == "" {
-		terminal = emitted
+		return statusError("cursor_stream_missing_result", "Cursor stream-json output ended without a terminal result", http.StatusBadGateway)
 	}
 	return tmpService.emitStreamLine(ctx, host, streamID, format, model, created, terminal, true, usage)
 }

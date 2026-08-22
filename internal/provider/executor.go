@@ -28,8 +28,8 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (pluginapi.Ex
 		return pluginapi.ExecutorResponse{}, statusError("unsupported_format", fmt.Sprintf("unsupported request format %q", firstNonEmpty(req.SourceFormat, req.Format)), http.StatusUnprocessableEntity)
 	}
 	raw := firstPayload(req)
-	if hasUnsupportedTools(raw) {
-		return pluginapi.ExecutorResponse{}, statusError("unsupported_tools", "Cursor Agent CLI provider does not support caller-supplied tool schemas or external tool-call loops", http.StatusUnprocessableEntity)
+	if err := validateRequestPayload(raw); err != nil {
+		return pluginapi.ExecutorResponse{}, err
 	}
 	model, err := s.resolveModel(ctx, req.Model)
 	if err != nil {
@@ -76,8 +76,8 @@ func (s *Service) ExecuteStream(ctx context.Context, req ExecuteRequest) (http.H
 		return nil, statusError("unsupported_format", fmt.Sprintf("unsupported request format %q", firstNonEmpty(req.SourceFormat, req.Format)), http.StatusUnprocessableEntity)
 	}
 	raw := firstPayload(req)
-	if hasUnsupportedTools(raw) {
-		return nil, statusError("unsupported_tools", "Cursor Agent CLI provider does not support caller-supplied tool schemas or external tool-call loops", http.StatusUnprocessableEntity)
+	if err := validateRequestPayload(raw); err != nil {
+		return nil, err
 	}
 	model, err := s.resolveModel(ctx, req.Model)
 	if err != nil {
@@ -111,7 +111,7 @@ func (s *Service) ExecuteStream(ctx context.Context, req ExecuteRequest) (http.H
 		}
 	}()
 	headers := http.Header{}
-	headers.Set("Content-Type", "text/event-stream")
+	headers.Set("Content-Type", "application/x-ndjson")
 	headers.Set("Cache-Control", "no-cache")
 	return headers, nil
 }
@@ -144,21 +144,4 @@ func jsonHeaders() http.Header {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	return h
-}
-
-func filterResponseHeaders(headers http.Header) http.Header {
-	out := http.Header{}
-	for key, values := range headers {
-		if strings.EqualFold(key, "content-type") || strings.EqualFold(key, "cache-control") || strings.EqualFold(key, "retry-after") {
-			out[key] = append([]string(nil), values...)
-		}
-	}
-	return out
-}
-
-func cloneHeader(headers http.Header) http.Header {
-	if len(headers) == 0 {
-		return http.Header{}
-	}
-	return headers.Clone()
 }

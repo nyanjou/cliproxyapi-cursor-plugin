@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -167,6 +168,184 @@ func TestCLIProxyAPIV72138FullManagementInstallFlow(t *testing.T) {
 	}
 }
 
+func TestInstallOfficialCursorAgentUsesOfficialNestedBinaryPath(t *testing.T) {
+	pkg := tarGz(t, func(tw *tar.Writer) {
+		body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Cursor Agent 2026.08.11-e8db854'; exit 0; fi\necho ok\n"
+		_ = tw.WriteHeader(&tar.Header{Name: "dist-package", Typeflag: tar.TypeDir, Mode: 0o755})
+		_ = tw.WriteHeader(&tar.Header{Name: "dist-package/cursor-agent", Mode: 0o755, Size: int64(len(body))})
+		_, _ = tw.Write([]byte(body))
+	})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/install":
+			_, _ = w.Write([]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`))
+		case "/pkg":
+			_, _ = w.Write(pkg)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	home := t.TempDir()
+	s := newTestService(t, fakeAgent(t, `exit 0`))
+	cfg := s.Config()
+	cfg.InstallerURL = ts.URL + "/install"
+	cfg.TestPackageURLOverride = ts.URL + "/pkg"
+	cfg.ManagedInstallRoot = home
+	if err := s.Configure(mustYAML(t, cfg)); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.InstallOfficialCursorAgent(context.Background())
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !res.Installed || res.Version != "2026.08.11-e8db854" {
+		t.Fatalf("result=%#v", res)
+	}
+
+	binDir := filepath.Join(home, ".local", "bin")
+	versionDir := filepath.Join(home, ".local", "share", "cursor-agent", "versions", "2026.08.11-e8db854")
+	resolvedVersionDir, err := filepath.EvalSymlinks(versionDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(version dir): %v", err)
+	}
+	wantTarget := filepath.Join(versionDir, "dist-package", "cursor-agent")
+	wantTarget, err = filepath.EvalSymlinks(wantTarget)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(want target): %v", err)
+	}
+	for _, name := range []string{"agent", "cursor-agent"} {
+		link := filepath.Join(binDir, name)
+		resolved, err := filepath.EvalSymlinks(link)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%s): %v", name, err)
+		}
+		if resolved != wantTarget {
+			t.Fatalf("%s resolved to %q, want %q", name, resolved, wantTarget)
+		}
+		rel, err := filepath.Rel(resolvedVersionDir, resolved)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			t.Fatalf("%s resolved outside version dir: rel=%q err=%v", name, rel, err)
+		}
+		out, err := exec.Command(link, "--version").CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "2026.08.11-e8db854") {
+			t.Fatalf("%s --version output=%q err=%v", name, out, err)
+		}
+	}
+	if st := s.InstallStatus(); !st.Installed || st.Version != "2026.08.11-e8db854" {
+		t.Fatalf("status=%#v", st)
+	}
+}
+
+func TestLiveOfficialPackageInstallProbe(t *testing.T) {
+	if os.Getenv("CURSOR_LIVE_PACKAGE_INSTALL_PROBE") != "1" {
+		t.Skip("set CURSOR_LIVE_PACKAGE_INSTALL_PROBE=1 to download and install the official Cursor package in a disposable HOME")
+	}
+	home := t.TempDir()
+	s := newTestService(t, fakeAgent(t, `exit 0`))
+	cfg := s.Config()
+	cfg.InstallerURL = officialInstallerURL
+	cfg.TestPackageURLOverride = ""
+	cfg.ManagedInstallRoot = home
+	cfg.MaxPackageBytes = 256 * 1024 * 1024
+	cfg.MaxExpandedBytes = 512 * 1024 * 1024
+	cfg.MaxArchiveEntries = 10000
+	if err := s.Configure(mustYAML(t, cfg)); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.InstallOfficialCursorAgent(context.Background())
+	if err != nil {
+		t.Fatalf("live official package install: %v", err)
+	}
+	if !res.Installed || res.Version == "" || res.PackageSHA256 == "" || res.PackageBytes <= 0 {
+		t.Fatalf("result=%#v", res)
+	}
+	binDir := filepath.Join(home, ".local", "bin")
+	versionDir := filepath.Join(home, ".local", "share", "cursor-agent", "versions", res.Version)
+	resolvedVersionDir, err := filepath.EvalSymlinks(versionDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(version dir): %v", err)
+	}
+	for _, name := range []string{"agent", "cursor-agent"} {
+		link := filepath.Join(binDir, name)
+		resolved, err := filepath.EvalSymlinks(link)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%s): %v", name, err)
+		}
+		rel, err := filepath.Rel(resolvedVersionDir, resolved)
+		if err != nil || rel == "." || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+			t.Fatalf("%s resolved outside version dir: resolved=%q rel=%q err=%v", name, resolved, rel, err)
+		}
+		out, err := exec.Command(link, "--version").CombinedOutput()
+		if err != nil || !strings.Contains(string(out), res.Version) {
+			t.Fatalf("%s --version output=%q err=%v result=%#v", name, out, err, res)
+		}
+	}
+	if st := s.InstallStatus(); !st.Installed || st.Version != res.Version {
+		t.Fatalf("status=%#v result=%#v", st, res)
+	}
+	t.Logf("version=%s package_sha256=%s package_bytes=%d", res.Version, res.PackageSHA256, res.PackageBytes)
+}
+
+func TestInstallOfficialCursorAgentPreservesPriorVersionOnFailedUpgrade(t *testing.T) {
+	goodVersion := "2026.08.11-e8db854"
+	badVersion := "2026.08.12-deadbee"
+	packageForVersion := func(versionOutput string) []byte {
+		return tarGz(t, func(tw *tar.Writer) {
+			body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Cursor Agent " + versionOutput + "'; exit 0; fi\nexit 0\n"
+			_ = tw.WriteHeader(&tar.Header{Name: "dist-package", Typeflag: tar.TypeDir, Mode: 0o755})
+			_ = tw.WriteHeader(&tar.Header{Name: "dist-package/cursor-agent", Mode: 0o755, Size: int64(len(body))})
+			_, _ = tw.Write([]byte(body))
+		})
+	}
+	version := goodVersion
+	pkg := packageForVersion(goodVersion)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/install":
+			_, _ = w.Write([]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/` + version + `/${OS}/${ARCH}/agent-cli-package.tar.gz"`))
+		case "/pkg":
+			_, _ = w.Write(pkg)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	home := t.TempDir()
+	s := newTestService(t, fakeAgent(t, `exit 0`))
+	cfg := s.Config()
+	cfg.InstallerURL = ts.URL + "/install"
+	cfg.TestPackageURLOverride = ts.URL + "/pkg"
+	cfg.ManagedInstallRoot = home
+	if err := s.Configure(mustYAML(t, cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InstallOfficialCursorAgent(context.Background()); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+
+	version = badVersion
+	pkg = packageForVersion(goodVersion) // extracted candidate lies about --version and must not activate.
+	if _, err := s.InstallOfficialCursorAgent(context.Background()); err == nil {
+		t.Fatal("expected failed upgrade from version mismatch")
+	}
+
+	if st := s.InstallStatus(); !st.Installed || st.Version != goodVersion {
+		t.Fatalf("previous install not preserved after failed upgrade: %#v", st)
+	}
+	for _, name := range []string{"agent", "cursor-agent"} {
+		link := filepath.Join(home, ".local", "bin", name)
+		out, err := exec.Command(link, "--version").CombinedOutput()
+		if err != nil || !strings.Contains(string(out), goodVersion) {
+			t.Fatalf("previous %s not executable after failed upgrade: out=%q err=%v", name, out, err)
+		}
+	}
+}
+
 func TestParseOfficialInstallerStrictly(t *testing.T) {
 	ok := []byte(`VERSION="2026.08.11-e8db854"
 DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`)
@@ -240,7 +419,8 @@ func TestSafeExtractRejectsTraversalLinksAndDevices(t *testing.T) {
 }
 
 func TestInstallOfficialCursorAgentIsExplicitSerializedAndIdempotent(t *testing.T) {
-	var downloads int
+	var installerFetches int
+	var packageFetches int
 	var mu sync.Mutex
 	pkg := tarGz(t, func(tw *tar.Writer) {
 		body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Cursor Agent 2026.08.11-e8db854'; exit 0; fi\nexit 0\n"
@@ -248,13 +428,16 @@ func TestInstallOfficialCursorAgentIsExplicitSerializedAndIdempotent(t *testing.
 		_, _ = tw.Write([]byte(body))
 	})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		downloads++
-		mu.Unlock()
 		switch r.URL.Path {
 		case "/install":
+			mu.Lock()
+			installerFetches++
+			mu.Unlock()
 			_, _ = w.Write([]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`))
 		case "/pkg":
+			mu.Lock()
+			packageFetches++
+			mu.Unlock()
 			_, _ = w.Write(pkg)
 		default:
 			http.NotFound(w, r)
@@ -286,10 +469,11 @@ func TestInstallOfficialCursorAgentIsExplicitSerializedAndIdempotent(t *testing.
 	}
 	wg.Wait()
 	mu.Lock()
-	gotDownloads := downloads
+	gotInstallerFetches := installerFetches
+	gotPackageFetches := packageFetches
 	mu.Unlock()
-	if gotDownloads != 2 { // one installer script + one package; concurrent calls reuse installed result
-		t.Fatalf("downloads=%d", gotDownloads)
+	if gotInstallerFetches != 4 || gotPackageFetches != 1 { // one package install; later serialized confirmations only recheck installer version
+		t.Fatalf("installer_fetches=%d package_fetches=%d", gotInstallerFetches, gotPackageFetches)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".local", "bin", "agent")); err != nil {
 		t.Fatalf("agent symlink missing: %v", err)

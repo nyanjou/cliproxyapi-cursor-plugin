@@ -56,7 +56,10 @@ type extractLimits struct {
 	MaxExpandedBytes int64
 }
 
-type extractedArchive struct{ BinaryPath string }
+type extractedArchive struct {
+	BinaryPath                string
+	ArchiveRelativeBinaryPath string
+}
 
 var (
 	officialPkgCandidateRE = regexp.MustCompile(`https?://[^\s"'<>]+/agent-cli-package\.tar\.gz`)
@@ -195,9 +198,6 @@ func (s *Service) InstallStatus() InstallStatus {
 func (s *Service) InstallOfficialCursorAgent(ctx context.Context) (InstallResult, error) {
 	s.installMu.Lock()
 	defer s.installMu.Unlock()
-	if st := s.InstallStatus(); st.Installed && st.Version != "" {
-		return InstallResult{Installed: true, Version: st.Version, ExecutablePath: st.ExecutablePath}, nil
-	}
 	cfg := s.Config()
 	root, err := managedRoot(cfg)
 	if err != nil {
@@ -221,6 +221,9 @@ func (s *Service) InstallOfficialCursorAgent(ctx context.Context) (InstallResult
 	if err != nil {
 		return InstallResult{}, err
 	}
+	if st := s.InstallStatus(); st.Installed && st.Version == info.Version {
+		return InstallResult{Installed: true, Version: st.Version, ExecutablePath: st.ExecutablePath}, nil
+	}
 	pkgURL := info.PackageURL
 	if cfg.TestPackageURLOverride != "" {
 		pkgURL = cfg.TestPackageURLOverride
@@ -242,6 +245,9 @@ func (s *Service) InstallOfficialCursorAgent(ctx context.Context) (InstallResult
 	if err := verifyAgentVersion(ctx, ex.BinaryPath, info.Version); err != nil {
 		return InstallResult{}, err
 	}
+	if _, err := validateExtractedBinaryPath(tmp, ex.ArchiveRelativeBinaryPath); err != nil {
+		return InstallResult{}, err
+	}
 	versionDir := filepath.Join(root, ".local", "share", "cursor-agent", "versions", info.Version)
 	if err := os.MkdirAll(filepath.Dir(versionDir), 0o755); err != nil {
 		return InstallResult{}, err
@@ -252,21 +258,48 @@ func (s *Service) InstallOfficialCursorAgent(ctx context.Context) (InstallResult
 		return InstallResult{}, fmt.Errorf("stage Cursor agent: %w", err)
 	}
 	tmp = ""
-	_ = os.RemoveAll(versionDir)
+	backup := versionDir + ".old"
+	_ = os.RemoveAll(backup)
+	hadPrevious := false
+	if _, err := os.Stat(versionDir); err == nil {
+		hadPrevious = true
+		if err := os.Rename(versionDir, backup); err != nil {
+			_ = os.RemoveAll(staged)
+			return InstallResult{}, fmt.Errorf("backup previous Cursor agent version: %w", err)
+		}
+	}
+	activated := false
+	defer func() {
+		if !activated && hadPrevious {
+			_ = os.RemoveAll(versionDir)
+			_ = os.Rename(backup, versionDir)
+		}
+		if activated {
+			_ = os.RemoveAll(backup)
+		}
+	}()
 	if err := os.Rename(staged, versionDir); err != nil {
 		_ = os.RemoveAll(staged)
 		return InstallResult{}, fmt.Errorf("activate Cursor agent version: %w", err)
+	}
+	finalBin, err := validateExtractedBinaryPath(versionDir, ex.ArchiveRelativeBinaryPath)
+	if err != nil {
+		return InstallResult{}, err
 	}
 	binDir := filepath.Join(root, ".local", "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return InstallResult{}, err
 	}
-	rel, _ := filepath.Rel(binDir, filepath.Join(versionDir, filepath.Base(ex.BinaryPath)))
+	rel, err := filepath.Rel(binDir, finalBin)
+	if err != nil {
+		return InstallResult{}, err
+	}
 	for _, name := range []string{"agent", "cursor-agent"} {
 		if err := replaceSymlink(filepath.Join(binDir, name), rel); err != nil {
 			return InstallResult{}, err
 		}
 	}
+	activated = true
 	return InstallResult{Installed: true, Version: info.Version, ExecutablePath: filepath.Join(binDir, "agent"), PackageSHA256: hex.EncodeToString(sum[:]), PackageBytes: int64(len(pkg))}, nil
 }
 
@@ -328,6 +361,7 @@ func safeExtractTarGz(r io.Reader, dest string, lim extractLimits) (extractedArc
 	var total int64
 	seen := map[string]struct{}{}
 	var bin string
+	var binRel string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -376,6 +410,7 @@ func safeExtractTarGz(r io.Reader, dest string, lim extractLimits) (extractedArc
 			}
 			if filepath.Base(clean) == "agent" || filepath.Base(clean) == "cursor-agent" {
 				bin = target
+				binRel = clean
 			}
 		case tar.TypeSymlink:
 			if _, err := safeArchivePath(filepath.Join(filepath.Dir(clean), hdr.Linkname)); err != nil || filepath.IsAbs(hdr.Linkname) || strings.Contains(hdr.Linkname, "..") {
@@ -394,7 +429,28 @@ func safeExtractTarGz(r io.Reader, dest string, lim extractLimits) (extractedArc
 	if bin == "" {
 		return extractedArchive{}, fmt.Errorf("cursor package did not contain agent binary")
 	}
-	return extractedArchive{BinaryPath: bin}, nil
+	return extractedArchive{BinaryPath: bin, ArchiveRelativeBinaryPath: binRel}, nil
+}
+
+func validateExtractedBinaryPath(root, archiveRelativePath string) (string, error) {
+	clean, err := safeArchivePath(archiveRelativePath)
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(root, clean)
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve Cursor agent version dir: %w", err)
+	}
+	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve Cursor agent binary: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedCandidate)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return "", fmt.Errorf("cursor agent binary escapes version dir")
+	}
+	return candidate, nil
 }
 
 func safeArchivePath(name string) (string, error) {

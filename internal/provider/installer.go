@@ -172,7 +172,7 @@ func htmlResponse(html string) pluginapi.ManagementResponse {
 }
 
 func setupHTML() string {
-	return `<!doctype html><meta charset="utf-8"><title>Cursor Agent CLI setup</title><main><h1>Install official Cursor Agent CLI</h1><p>This plugin can download the official Cursor Agent CLI package from cursor.com and install it inside the CLIProxy runtime.</p><ul><li>Download source: https://cursor.com/install, parsed to https://downloads.cursor.com/lab/&lt;version&gt;/...</li><li>Install location: runtime HOME/.local/share/cursor-agent/versions/&lt;version&gt; plus HOME/.local/bin/agent symlink.</li><li>The CLI will execute inside the CLIProxy runtime with that runtime's filesystem and network permissions.</li><li>No install happens until you press the explicit confirmation button.</li></ul><label>Management key <input id="k" type="password" autocomplete="off"></label><button id="install">Install official Cursor Agent CLI</button><button id="login">Continue login</button><pre id="out"></pre><script>const out=document.getElementById('out');document.getElementById('install').onclick=async()=>{out.textContent='Installing...';const r=await fetch('/v0/management/plugins/cursor/setup/install',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+document.getElementById('k').value},body:JSON.stringify({confirm:true})});out.textContent=await r.text()};document.getElementById('login').onclick=()=>history.back();</script></main>`
+	return `<!doctype html><meta charset="utf-8"><title>Cursor Agent CLI setup</title><main><h1>Install official Cursor Agent CLI</h1><p>This plugin can download the official Cursor Agent CLI package from cursor.com and install it inside the CLIProxy runtime.</p><ul><li>Download source: https://cursor.com/install, parsed to https://downloads.cursor.com/lab/&lt;version&gt;/...</li><li>Install location: runtime HOME/.local/share/cursor-agent/versions/&lt;version&gt;, activated through HOME/.local/share/cursor-agent/current, with HOME/.local/bin/agent and HOME/.local/bin/cursor-agent resolving through that single current pointer.</li><li>The CLI will execute inside the CLIProxy runtime with that runtime's filesystem and network permissions.</li><li>No install happens until you press the explicit confirmation button.</li></ul><label>Management key <input id="k" type="password" autocomplete="off"></label><button id="install">Install official Cursor Agent CLI</button><button id="login">Continue login</button><pre id="out"></pre><script>const out=document.getElementById('out');document.getElementById('install').onclick=async()=>{out.textContent='Installing...';const r=await fetch('/v0/management/plugins/cursor/setup/install',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+document.getElementById('k').value},body:JSON.stringify({confirm:true})});out.textContent=await r.text()};document.getElementById('login').onclick=()=>history.back();</script></main>`
 }
 
 func (s *Service) InstallStatus() InstallStatus {
@@ -183,14 +183,15 @@ func (s *Service) InstallStatus() InstallStatus {
 		st.Error = err.Error()
 		return st
 	}
-	bin := filepath.Join(root, ".local", "bin", "agent")
-	if resolved, err := filepath.EvalSymlinks(bin); err == nil {
+	state, err := inspectManagedInstall(root)
+	if err != nil {
+		st.Error = err.Error()
+		return st
+	}
+	if state.Installed {
 		st.Installed = true
-		st.ExecutablePath = bin
-		parts := strings.Split(filepath.ToSlash(resolved), "/versions/")
-		if len(parts) == 2 {
-			st.Version = strings.Split(parts[1], "/")[0]
-		}
+		st.Version = state.Version
+		st.ExecutablePath = state.ExecutablePath
 	}
 	return st
 }
@@ -248,59 +249,70 @@ func (s *Service) InstallOfficialCursorAgent(ctx context.Context) (InstallResult
 	if _, err := validateExtractedBinaryPath(tmp, ex.ArchiveRelativeBinaryPath); err != nil {
 		return InstallResult{}, err
 	}
-	versionDir := filepath.Join(root, ".local", "share", "cursor-agent", "versions", info.Version)
+	versionDir := filepath.Join(managedVersionsDir(root), info.Version)
 	if err := os.MkdirAll(filepath.Dir(versionDir), 0o755); err != nil {
 		return InstallResult{}, err
 	}
+	prior, err := inspectManagedInstall(root)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	if prior.Installed && prior.ArchiveRelativeBinPath != ex.ArchiveRelativeBinaryPath {
+		return InstallResult{}, fmt.Errorf("managed Cursor agent binary layout changed from %q to %q; refusing non-transactional migration", prior.ArchiveRelativeBinPath, ex.ArchiveRelativeBinaryPath)
+	}
 	staged := versionDir + ".new"
 	_ = os.RemoveAll(staged)
-	if err := os.Rename(tmp, staged); err != nil {
+	if err := installerRename(tmp, staged); err != nil {
 		return InstallResult{}, fmt.Errorf("stage Cursor agent: %w", err)
 	}
 	tmp = ""
 	backup := versionDir + ".old"
 	_ = os.RemoveAll(backup)
-	hadPrevious := false
+	versionDirExisted := false
 	if _, err := os.Stat(versionDir); err == nil {
-		hadPrevious = true
-		if err := os.Rename(versionDir, backup); err != nil {
+		versionDirExisted = true
+		if err := installerRename(versionDir, backup); err != nil {
 			_ = os.RemoveAll(staged)
 			return InstallResult{}, fmt.Errorf("backup previous Cursor agent version: %w", err)
 		}
 	}
 	activated := false
 	defer func() {
-		if !activated && hadPrevious {
-			_ = os.RemoveAll(versionDir)
-			_ = os.Rename(backup, versionDir)
+		if !activated {
+			if versionDirExisted {
+				_ = os.RemoveAll(versionDir)
+				_ = installerRename(backup, versionDir)
+			} else {
+				_ = os.RemoveAll(versionDir)
+			}
+			if !prior.Installed {
+				cleanupInitialInstallLinks(root)
+			}
 		}
 		if activated {
 			_ = os.RemoveAll(backup)
 		}
 	}()
-	if err := os.Rename(staged, versionDir); err != nil {
+	if err := installerRename(staged, versionDir); err != nil {
 		_ = os.RemoveAll(staged)
-		return InstallResult{}, fmt.Errorf("activate Cursor agent version: %w", err)
+		return InstallResult{}, fmt.Errorf("activate Cursor agent version dir: %w", err)
 	}
-	finalBin, err := validateExtractedBinaryPath(versionDir, ex.ArchiveRelativeBinaryPath)
-	if err != nil {
+	if _, err := validateExtractedBinaryPath(versionDir, ex.ArchiveRelativeBinaryPath); err != nil {
 		return InstallResult{}, err
 	}
-	binDir := filepath.Join(root, ".local", "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return InstallResult{}, err
-	}
-	rel, err := filepath.Rel(binDir, finalBin)
-	if err != nil {
-		return InstallResult{}, err
-	}
-	for _, name := range []string{"agent", "cursor-agent"} {
-		if err := replaceSymlink(filepath.Join(binDir, name), rel); err != nil {
-			return InstallResult{}, err
+	if prior.Installed {
+		if err := replaceCurrentLink(root, prior.Version); err != nil {
+			return InstallResult{}, fmt.Errorf("prepare Cursor agent current link for migration: %w", err)
 		}
 	}
+	if err := ensureStableBinLinks(root, ex.ArchiveRelativeBinaryPath); err != nil {
+		return InstallResult{}, fmt.Errorf("install Cursor agent bin links: %w", err)
+	}
+	if err := replaceCurrentLink(root, info.Version); err != nil {
+		return InstallResult{}, fmt.Errorf("activate Cursor agent current link: %w", err)
+	}
 	activated = true
-	return InstallResult{Installed: true, Version: info.Version, ExecutablePath: filepath.Join(binDir, "agent"), PackageSHA256: hex.EncodeToString(sum[:]), PackageBytes: int64(len(pkg))}, nil
+	return InstallResult{Installed: true, Version: info.Version, ExecutablePath: filepath.Join(managedBinDir(root), "agent"), PackageSHA256: hex.EncodeToString(sum[:]), PackageBytes: int64(len(pkg))}, nil
 }
 
 func allowedInstallerHost(host string) bool {
@@ -483,12 +495,18 @@ func verifyAgentVersion(ctx context.Context, bin, version string) error {
 	return nil
 }
 func replaceSymlink(path, target string) error {
-	tmp := path + ".tmp"
-	_ = os.Remove(tmp)
+	tmp, err := randomSiblingPath(filepath.Dir(path), "."+filepath.Base(path)+"-tmp-")
+	if err != nil {
+		return err
+	}
 	if err := os.Symlink(target, tmp); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := installerRename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func resolveAgentExecutable(cfg Config) (string, error) {

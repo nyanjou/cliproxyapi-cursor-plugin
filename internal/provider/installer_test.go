@@ -80,20 +80,96 @@ func TestManagementRegistrationSeparatesResourceAndAuthenticatedInstall(t *testi
 	if len(reg.Resources) != 1 || reg.Resources[0].Path != "/setup" {
 		t.Fatalf("resources = %#v", reg.Resources)
 	}
+	statusRoutes := 0
 	installRoutes := 0
 	for _, r := range reg.Routes {
+		if r.Method == http.MethodGet && r.Path == "/plugins/cursor/setup/status" && r.Menu == "" {
+			statusRoutes++
+		}
 		if r.Method == http.MethodPost && r.Path == "/plugins/cursor/setup/install" {
 			installRoutes++
 		}
 	}
-	if installRoutes != 1 {
-		t.Fatalf("install route not registered exactly once: %#v", reg.Routes)
+	if statusRoutes != 1 || installRoutes != 1 {
+		t.Fatalf("status/install routes not registered exactly once as management routes: %#v", reg.Routes)
+	}
+}
+
+func TestHandleManagementAcceptsCLIProxyAPIFullManagementPaths(t *testing.T) {
+	s := newTestService(t, fakeAgent(t, `exit 0`))
+	status, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/management/plugins/cursor/setup/status"})
+	if err != nil {
+		t.Fatalf("status HandleManagement: %v", err)
+	}
+	if status.StatusCode != http.StatusOK || !strings.Contains(string(status.Body), "managed_root") {
+		t.Fatalf("full status response=%d %s", status.StatusCode, status.Body)
+	}
+	install, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/cursor/setup/install", Body: []byte(`{"confirm":false}`)})
+	if err != nil {
+		t.Fatalf("install HandleManagement: %v", err)
+	}
+	if install.StatusCode != http.StatusBadRequest || !strings.Contains(string(install.Body), "explicit") {
+		t.Fatalf("full install response=%d %s", install.StatusCode, install.Body)
+	}
+	bypass, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/cursor/../cursor/setup/install", Body: []byte(`{"confirm":false}`)})
+	if err != nil {
+		t.Fatalf("bypass HandleManagement: %v", err)
+	}
+	if bypass.StatusCode != http.StatusNotFound {
+		t.Fatalf("confused full path bypass response=%d %s", bypass.StatusCode, bypass.Body)
+	}
+}
+
+func TestCLIProxyAPIV72138FullManagementInstallFlow(t *testing.T) {
+	pkg := tarGz(t, func(tw *tar.Writer) {
+		body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Cursor Agent 2026.08.11-e8db854'; exit 0; fi\nexit 0\n"
+		_ = tw.WriteHeader(&tar.Header{Name: "cursor-agent", Mode: 0o755, Size: int64(len(body))})
+		_, _ = tw.Write([]byte(body))
+	})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/install":
+			_, _ = w.Write([]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`))
+		case "/pkg":
+			_, _ = w.Write(pkg)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	home := t.TempDir()
+	s := newTestService(t, fakeAgent(t, `exit 0`))
+	cfg := s.Config()
+	cfg.InstallerURL = ts.URL + "/install"
+	cfg.TestPackageURLOverride = ts.URL + "/pkg"
+	cfg.ManagedInstallRoot = home
+	if err := s.Configure(mustYAML(t, cfg)); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/management/plugins/cursor/setup/status"})
+	if err != nil {
+		t.Fatalf("status HandleManagement: %v", err)
+	}
+	if status.StatusCode != http.StatusOK || strings.Contains(string(status.Body), `"installed":true`) {
+		t.Fatalf("unexpected preinstall status=%d %s", status.StatusCode, status.Body)
+	}
+	install, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/cursor/setup/install", Body: []byte(`{"confirm":true}`)})
+	if err != nil {
+		t.Fatalf("install HandleManagement: %v", err)
+	}
+	if install.StatusCode != http.StatusOK || !strings.Contains(string(install.Body), `"installed":true`) {
+		t.Fatalf("full route install response=%d %s", install.StatusCode, install.Body)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "bin", "agent")); err != nil {
+		t.Fatalf("agent symlink missing after full route install: %v", err)
 	}
 }
 
 func TestParseOfficialInstallerStrictly(t *testing.T) {
 	ok := []byte(`VERSION="2026.08.11-e8db854"
-url="https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/x64/agent-cli-package.tar.gz"`)
+DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`)
 	info, err := parseOfficialInstaller(ok, "linux", "amd64")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -102,14 +178,36 @@ url="https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/x64/agent-cli-pac
 		t.Fatalf("info=%#v", info)
 	}
 	bad := [][]byte{
-		[]byte(`https://evil.test/lab/2026.08.11-e8db854/linux/x64/agent-cli-package.tar.gz`),
-		[]byte(`https://downloads.cursor.com/lab/../../linux/x64/agent-cli-package.tar.gz`),
+		[]byte(`DOWNLOAD_URL="https://evil.test/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`),
+		[]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/../../${OS}/${ARCH}/agent-cli-package.tar.gz"`),
+		[]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${EVIL}/agent-cli-package.tar.gz"`),
+		[]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/${ARCH}/agent-cli-package.tar.gz"`),
+		[]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/x64/agent-cli-package.tar.gz"`),
+		[]byte(string(ok) + "\n" + `MIRROR="https://evil.test/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`),
 		[]byte(string(ok) + "\n" + string(ok)),
 	}
 	for _, b := range bad {
 		if _, err := parseOfficialInstaller(b, "linux", "amd64"); err == nil {
 			t.Fatalf("expected reject for %s", b)
 		}
+	}
+}
+
+func TestLiveOfficialInstallerParserProbe(t *testing.T) {
+	if os.Getenv("CURSOR_LIVE_INSTALLER_PROBE") != "1" {
+		t.Skip("set CURSOR_LIVE_INSTALLER_PROBE=1 to probe https://cursor.com/install without downloading the package")
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	body, err := fetchBounded(context.Background(), client, officialInstallerURL, 128*1024)
+	if err != nil {
+		t.Fatalf("fetch live installer: %v", err)
+	}
+	info, err := parseOfficialInstaller(body, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("parse live installer: %v", err)
+	}
+	if !strings.HasPrefix(info.PackageURL, "https://downloads.cursor.com/lab/") || !strings.HasSuffix(info.PackageURL, "/linux/x64/agent-cli-package.tar.gz") {
+		t.Fatalf("unexpected derived package URL: %#v", info)
 	}
 }
 
@@ -155,7 +253,7 @@ func TestInstallOfficialCursorAgentIsExplicitSerializedAndIdempotent(t *testing.
 		mu.Unlock()
 		switch r.URL.Path {
 		case "/install":
-			_, _ = w.Write([]byte(`https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/x64/agent-cli-package.tar.gz`))
+			_, _ = w.Write([]byte(`DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/${OS}/${ARCH}/agent-cli-package.tar.gz"`))
 		case "/pkg":
 			_, _ = w.Write(pkg)
 		default:

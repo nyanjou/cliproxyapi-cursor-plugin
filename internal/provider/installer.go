@@ -25,6 +25,7 @@ import (
 const (
 	officialInstallerURL  = "https://cursor.com/install"
 	setupResourcePath     = "/v0/resource/plugins/cursor/setup"
+	managementBasePath    = "/v0/management"
 	managementInstallPath = "/plugins/cursor/setup/install"
 	managementStatusPath  = "/plugins/cursor/setup/status"
 )
@@ -57,7 +58,10 @@ type extractLimits struct {
 
 type extractedArchive struct{ BinaryPath string }
 
-var officialPkgRE = regexp.MustCompile(`https://downloads\.cursor\.com/lab/([0-9]{4}\.[0-9]{2}\.[0-9]{2}-[A-Za-z0-9][A-Za-z0-9._-]{2,63})/(linux|darwin)/(x64|arm64)/agent-cli-package\.tar\.gz`)
+var (
+	officialPkgCandidateRE = regexp.MustCompile(`https?://[^\s"'<>]+/agent-cli-package\.tar\.gz`)
+	officialPkgTemplateRE  = regexp.MustCompile(`^https://downloads\.cursor\.com/lab/([0-9]{4}\.[0-9]{2}\.[0-9]{2}-[A-Za-z0-9][A-Za-z0-9._-]{2,63})/\$\{OS\}/\$\{ARCH\}/agent-cli-package\.tar\.gz$`)
+)
 
 func setupURLFromBase(base string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(base))
@@ -78,21 +82,17 @@ func parseOfficialInstaller(body []byte, goos, goarch string) (installerInfo, er
 	if !ok {
 		return installerInfo{}, fmt.Errorf("unsupported Cursor Agent CLI platform %s/%s", goos, goarch)
 	}
-	matches := officialPkgRE.FindAllSubmatch(body, -1)
-	if len(matches) != 1 {
-		return installerInfo{}, fmt.Errorf("official installer must contain exactly one Cursor package URL for this parser; found %d", len(matches))
+	candidates := officialPkgCandidateRE.FindAll(body, -1)
+	if len(candidates) != 1 {
+		return installerInfo{}, fmt.Errorf("official installer must contain exactly one Cursor package URL candidate for this parser; found %d", len(candidates))
 	}
-	m := matches[0]
-	version, osPart, archPart := string(m[1]), string(m[2]), string(m[3])
-	if osPart != wantOS || archPart != wantArch {
-		return installerInfo{}, fmt.Errorf("official installer package is for unsupported platform %s/%s", osPart, archPart)
+	m := officialPkgTemplateRE.FindSubmatch(candidates[0])
+	if len(m) != 2 {
+		return installerInfo{}, fmt.Errorf("official installer package URL template is not canonical")
 	}
-	pkgURL := string(m[0])
+	version := string(m[1])
 	expected := fmt.Sprintf("https://downloads.cursor.com/lab/%s/%s/%s/agent-cli-package.tar.gz", version, wantOS, wantArch)
-	if pkgURL != expected {
-		return installerInfo{}, fmt.Errorf("official installer package URL is not canonical")
-	}
-	return installerInfo{Version: version, PackageURL: pkgURL}, nil
+	return installerInfo{Version: version, PackageURL: expected}, nil
 }
 
 func installerPlatform(goos, goarch string) (string, string, bool) {
@@ -104,7 +104,7 @@ func installerPlatform(goos, goarch string) (string, string, bool) {
 func (s *Service) RegisterManagement(_ context.Context, _ pluginapi.ManagementRegistrationRequest) (pluginapi.ManagementRegistrationResponse, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: managementStatusPath, Menu: "Cursor Agent setup status", Description: "Reports managed official Cursor Agent CLI installation status.", Handler: s},
+			{Method: http.MethodGet, Path: managementStatusPath, Description: "Reports managed official Cursor Agent CLI installation status.", Handler: s},
 			{Method: http.MethodPost, Path: managementInstallPath, Menu: "Install official Cursor Agent CLI", Description: "Explicitly installs the official Cursor Agent CLI into the plugin runtime HOME.", Handler: s},
 		},
 		Resources: []pluginapi.ResourceRoute{{Path: "/setup", Menu: "Cursor Agent setup", Description: "Explains and confirms official Cursor Agent CLI installation.", Handler: s}},
@@ -112,12 +112,16 @@ func (s *Service) RegisterManagement(_ context.Context, _ pluginapi.ManagementRe
 }
 
 func (s *Service) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	path, ok := normalizeCursorManagementPath(req.Path)
+	if !ok {
+		return jsonResponse(http.StatusNotFound, map[string]any{"error": "unknown Cursor management route"}), nil
+	}
 	switch {
-	case req.Method == http.MethodGet && (req.Path == "/setup" || req.Path == setupResourcePath):
+	case req.Method == http.MethodGet && (path == "/setup" || path == setupResourcePath):
 		return htmlResponse(setupHTML()), nil
-	case req.Method == http.MethodGet && req.Path == managementStatusPath:
+	case req.Method == http.MethodGet && path == managementStatusPath:
 		return jsonResponse(http.StatusOK, s.InstallStatus()), nil
-	case req.Method == http.MethodPost && req.Path == managementInstallPath:
+	case req.Method == http.MethodPost && path == managementInstallPath:
 		var body struct {
 			Confirm bool `json:"confirm"`
 		}
@@ -133,6 +137,23 @@ func (s *Service) HandleManagement(ctx context.Context, req pluginapi.Management
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"error": "unknown Cursor management route"}), nil
 	}
+}
+
+func normalizeCursorManagementPath(raw string) (string, bool) {
+	path := strings.TrimSpace(raw)
+	if path == "" || strings.ContainsAny(path, " 	\r\n") || strings.Contains(path, "..") || strings.Contains(path, "*") || strings.Contains(path, ":") {
+		return "", false
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if strings.HasPrefix(path, managementBasePath+"/") {
+		path = strings.TrimPrefix(path, managementBasePath)
+	}
+	if path == setupResourcePath || path == "/setup" || path == managementStatusPath || path == managementInstallPath {
+		return path, true
+	}
+	return "", false
 }
 
 func jsonResponse(status int, v any) pluginapi.ManagementResponse {

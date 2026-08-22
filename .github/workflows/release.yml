@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/cliproxyapi-copilot_${{ steps.version.outputs.value }}_linux_amd64.zip \
+            dist/cliproxyapi-cursor_${{ steps.version.outputs.value }}_linux_amd64.zip \
             dist/checksums.txt \
             --verify-tag \
             --generate-notes \

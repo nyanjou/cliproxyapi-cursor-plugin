@@ -1,24 +1,33 @@
-name: cliproxyapi-official-copilot-dev
+name: cliproxyapi-cursor-dev
 
 services:
   cliproxyapi:
+    # Example only: build an image that contains CLIProxyAPI plus the official Cursor Agent CLI.
+    # Do not curl-pipe installers in production; inspect and pin the Cursor CLI installer/checksum first.
     image: eceasy/cli-proxy-api:7.2.118
     pull_policy: missing
-    container_name: cliproxyapi-official-copilot-dev
+    container_name: cliproxyapi-cursor-dev
     restart: unless-stopped
     environment:
-      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:?generate .runtime/secrets.env first; see docs/claude-code-setup.md}
+      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:?generate .runtime/secrets.env first}
       TZ: UTC
+      HOME: /cursor-home
     ports:
       - "127.0.0.1:8317:8317"
     volumes:
       - ./.runtime/config.yaml:/CLIProxyAPI/config.yaml:ro
       - ./build/plugins:/CLIProxyAPI/plugins:ro
       - ./logs:/CLIProxyAPI/logs
+      - cursor-agent-home:/cursor-home
+      - cursor-agent-workspace:/var/lib/cliproxyapi-cursor/workspace
       - cliproxyapi-home:/root/.cli-proxy-api
     security_opt:
       - no-new-privileges:true
 
 volumes:
   cliproxyapi-home:
-    name: cliproxyapi_official_copilot_dev_home
+    name: cliproxyapi_cursor_dev_home
+  cursor-agent-home:
+    name: cliproxyapi_cursor_agent_home
+  cursor-agent-workspace:
+    name: cliproxyapi_cursor_workspace

@@ -35,8 +35,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: cliproxyapi-copilot-linux-amd64
+          name: cliproxyapi-cursor-linux-amd64
           path: |
-            dist/cliproxyapi-copilot_0.0.0_linux_amd64.zip
+            dist/cliproxyapi-cursor_0.0.0_linux_amd64.zip
             dist/checksums.txt
           if-no-files-found: error

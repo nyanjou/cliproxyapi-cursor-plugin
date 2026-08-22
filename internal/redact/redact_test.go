@@ -8,7 +8,7 @@ import (
 func TestTextRedactsTokens(t *testing.T) {
 	t.Parallel()
 
-	secret := "opaque-copilot-token"
+	secret := "opaque-cursor-token"
 	input := `Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz1234 ` +
 		`{"access_token":"github_pat_abcdefghijklmnopqrstuvwxyz1234","refresh_token":"refresh-value"} ` +
 		"upstream said " + secret

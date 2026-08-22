@@ -6,13 +6,13 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/arthur-sommer-etc/cliproxyapi-copilot-plugin/internal/provider"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/snupai/cliproxyapi-cursor-plugin/internal/provider"
 )
 
 var pluginService = provider.New(hostTransport{})
-var pluginVersion = "0.3.3"
+var pluginVersion = "0.1.0"
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -96,7 +96,7 @@ func dispatch(method string, request []byte) (any, error) {
 		}
 		return pluginService.ModelsForAuth(ctx, req.HostCallbackID, req.AuthModelRequest)
 	case pluginabi.MethodAuthIdentifier, pluginabi.MethodExecutorIdentifier:
-		return identifierResponse{Identifier: "copilot"}, nil
+		return identifierResponse{Identifier: "cursor"}, nil
 	case pluginabi.MethodAuthParse:
 		var req pluginapi.AuthParseRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -162,20 +162,21 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             "GitHub Copilot subscription provider",
+			Name:             "Cursor Agent CLI provider",
 			Version:          pluginVersion,
-			Author:           "self-owned",
-			GitHubRepository: "https://github.com/arthur-sommer-etc/cliproxyapi-copilot-plugin",
+			Author:           "Snupai / Nyanjou; based on MIT-licensed arthur-sommer-etc cliproxyapi-copilot-plugin ABI scaffolding",
+			GitHubRepository: "https://github.com/snupai/cliproxyapi-cursor-plugin",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "github_client_id", Type: pluginapi.ConfigFieldTypeString, Description: "Public GitHub OAuth application client identifier used for device flow."},
-				{Name: "github_scope", Type: pluginapi.ConfigFieldTypeString, Description: "Space-delimited GitHub OAuth scopes; defaults to the least-privilege read:user scope."},
-				{Name: "github_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "GitHub web OAuth base URL."},
-				{Name: "github_api_url", Type: pluginapi.ConfigFieldTypeString, Description: "GitHub REST API base URL used for identity and Copilot token exchange."},
-				{Name: "copilot_api_url", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback Copilot API base URL when the token response has no API endpoint."},
-				{Name: "oauth_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum device-code lifetime accepted by the plugin."},
-				{Name: "model_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "In-memory Copilot model catalog cache lifetime."},
-				{Name: "token_expiry_buffer_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Refresh Copilot API tokens this long before expiration."},
-				{Name: "excluded_model_prefixes", Type: pluginapi.ConfigFieldTypeArray, Description: "Case-insensitive model ID prefixes omitted from Copilot discovery to prevent collisions with native providers."},
+				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the Cursor Agent CLI-backed provider."},
+				{Name: "executable_path", Type: pluginapi.ConfigFieldTypeString, Description: "Path to the official Cursor Agent CLI executable (agent)."},
+				{Name: "workspace", Type: pluginapi.ConfigFieldTypeString, Description: "Dedicated empty workspace used for all read-only ask-mode CLI runs."},
+				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Optional prefix added to discovered Cursor model IDs."},
+				{Name: "allowed_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional allowlist of Cursor model IDs from agent models."},
+				{Name: "denied_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional denylist of Cursor model IDs from agent models."},
+				{Name: "excluded_model_prefixes", Type: pluginapi.ConfigFieldTypeArray, Description: "Case-insensitive model ID prefixes omitted from Cursor discovery."},
+				{Name: "environment_allowlist", Type: pluginapi.ConfigFieldTypeArray, Description: "Environment variable names allowed through to the agent subprocess; CURSOR_API_KEY is always stripped."},
+				{Name: "timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum runtime for one Cursor CLI execution."},
+				{Name: "max_concurrent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum concurrent Cursor CLI subprocesses."},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -183,8 +184,8 @@ func pluginRegistration() registration {
 			AuthProvider:          true,
 			Executor:              true,
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
-			ExecutorInputFormats:  []string{"openai-response", "claude"},
-			ExecutorOutputFormats: []string{"openai-response", "claude"},
+			ExecutorInputFormats:  []string{"openai-response", "openai-chat", "claude"},
+			ExecutorOutputFormats: []string{"openai-response", "openai-chat", "claude"},
 		},
 	}
 }

@@ -27,7 +27,7 @@ func statusError(code, message string, status int) error {
 }
 
 func upstreamStatusError(status int, detail string) error {
-	message := fmt.Sprintf("Copilot upstream returned HTTP %d", status)
+	message := fmt.Sprintf("Cursor agent upstream returned HTTP %d", status)
 	if detail != "" {
 		message += ": " + detail
 	}

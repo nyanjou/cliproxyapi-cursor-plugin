@@ -1,6 +1,6 @@
 GO_IMAGE ?= golang:1.26-bookworm
 DOCKER_PLATFORM ?= linux/amd64
-VERSION ?= 0.4.0
+VERSION ?= 0.4.1
 PLUGIN_DIR := build/plugins/linux/amd64
 PLUGIN_SO := $(PLUGIN_DIR)/cliproxyapi-cursor.so
 CACHE_DIR := .cache

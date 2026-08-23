@@ -12,7 +12,7 @@ import (
 )
 
 var pluginService = provider.New(hostTransport{})
-var pluginVersion = "0.4.0"
+var pluginVersion = "0.4.1"
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`

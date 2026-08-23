@@ -112,32 +112,50 @@ func (s *Service) runAgent(ctx context.Context, cfg Config, args []string, stdin
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stdout, stderr limitedBuffer
-	stdout.limit = cfg.MaxStdoutBytes
-	stderr.limit = cfg.MaxStderrBytes
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout, err := os.OpenFile(filepath.Join(workspace, ".cursor-stdout"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
+	if err != nil {
+		return agentResult{}, fmt.Errorf("create Cursor stdout capture: %w", err)
+	}
+	defer stdout.Close()
+	stderr, err := os.OpenFile(filepath.Join(workspace, ".cursor-stderr"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
+	if err != nil {
+		return agentResult{}, fmt.Errorf("create Cursor stderr capture: %w", err)
+	}
+	defer stderr.Close()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	startErr := cmd.Start()
 	if startErr != nil {
 		return agentResult{}, fmt.Errorf("start Cursor agent CLI: %w", startErr)
 	}
+	processGroupID := cmd.Process.Pid
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	var waitErr error
+	timedOut := false
 	select {
 	case waitErr = <-done:
 	case <-runCtx.Done():
-		killProcessGroup(cmd)
+		timedOut = true
+		killProcessGroupID(processGroupID)
 		select {
 		case waitErr = <-done:
 		case <-time.After(2 * time.Second):
-			return agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}, statusError("cursor_timeout", "Cursor agent CLI timed out and process group did not exit promptly", http.StatusGatewayTimeout)
+			return agentResult{}, statusError("cursor_timeout", "Cursor agent CLI timed out and process group did not exit promptly", http.StatusGatewayTimeout)
 		}
-		_ = waitErr
-		return agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}, statusError("cursor_timeout", "Cursor agent CLI timed out", http.StatusGatewayTimeout)
 	}
-	res := agentResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}
-	if stdout.truncated {
+	// Cursor may leave a detached worker-server in the child's process group. Its
+	// inherited stdout/stderr descriptors must not keep captures alive or leak workers.
+	killProcessGroupID(processGroupID)
+	res, stdoutTruncated, captureErr := readAgentCaptures(stdout, stderr, cfg)
+	if captureErr != nil {
+		return agentResult{}, statusError("cursor_output_capture", "Could not read Cursor agent CLI output", http.StatusBadGateway)
+	}
+	if timedOut {
+		_ = waitErr
+		return res, statusError("cursor_timeout", "Cursor agent CLI timed out", http.StatusGatewayTimeout)
+	}
+	if stdoutTruncated {
 		return res, statusError("cursor_stdout_limit", "Cursor agent CLI stdout exceeded configured limit", http.StatusBadGateway)
 	}
 	if waitErr != nil {
@@ -153,16 +171,44 @@ func (s *Service) runAgent(ctx context.Context, cfg Config, args []string, stdin
 	return res, nil
 }
 
+func readAgentCaptures(stdout, stderr *os.File, cfg Config) (agentResult, bool, error) {
+	stdoutBytes, stdoutTruncated, err := readLimitedCapture(stdout, cfg.MaxStdoutBytes)
+	if err != nil {
+		return agentResult{}, false, err
+	}
+	stderrBytes, _, err := readLimitedCapture(stderr, cfg.MaxStderrBytes)
+	if err != nil {
+		return agentResult{}, false, err
+	}
+	return agentResult{Stdout: stdoutBytes, Stderr: stderrBytes}, stdoutTruncated, nil
+}
+
+func readLimitedCapture(file *os.File, limit int) ([]byte, bool, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(raw) > limit {
+		return raw[:limit], true, nil
+	}
+	return raw, false, nil
+}
+
 func killProcessGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err == nil && pgid > 0 {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		return
-	}
+	killProcessGroupID(cmd.Process.Pid)
 	_ = cmd.Process.Kill()
+}
+
+func killProcessGroupID(pgid int) {
+	if pgid > 0 {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}
 }
 
 func expandWorkspaceArgs(args []string, workspace string) []string {

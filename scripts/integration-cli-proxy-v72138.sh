@@ -235,9 +235,9 @@ if grep -q 'management registrar cliproxyapi-cursor failed' "$TMP/docker.log"; t
   echo 'management registrar failure found in container log' >&2
   exit 1
 fi
-if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.4.0' "$TMP/docker.log"; then
-  echo 'plugin registration log for cliproxyapi-cursor v0.4.0 not found' >&2
+if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.4.1' "$TMP/docker.log"; then
+  echo 'plugin registration log for cliproxyapi-cursor v0.4.1 not found' >&2
   exit 1
 fi
 
-echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.4.0 no_registrar_failures=true native_auth_files=200 native_auth_models=200 responses=200 stream=200 quota=200'
+echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.4.1 no_registrar_failures=true native_auth_files=200 native_auth_models=200 responses=200 stream=200 quota=200'

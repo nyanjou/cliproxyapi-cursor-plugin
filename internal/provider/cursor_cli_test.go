@@ -203,6 +203,26 @@ printf '%s\n' '{"type":"result","result":"Hello!","usage":{"inputTokens":3,"outp
 	}
 }
 
+func TestExecuteDoesNotWaitForDetachedWorkerHoldingOutputDescriptors(t *testing.T) {
+	agent := fakeAgent(t, `
+if [ "$1" = "models" ]; then echo 'auto - Auto'; exit 0; fi
+(sleep 30) &
+printf '%s\n' '{"type":"result","result":"OK","usage":{"inputTokens":3,"outputTokens":2}}'
+`)
+	s := newTestService(t, agent)
+	started := time.Now()
+	resp, err := s.Execute(context.Background(), ExecuteRequest{ExecutorRequest: pluginapi.ExecutorRequest{Model: "auto", SourceFormat: "openai-response", OriginalRequest: []byte(`{"input":"hi"}`)}})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("execute waited for detached worker: %s", elapsed)
+	}
+	if got := gjson.GetBytes(resp.Payload, "output.0.content.0.text").String(); got != "OK" {
+		t.Fatalf("text=%q payload=%s", got, resp.Payload)
+	}
+}
+
 func joinStreamChunks(chunks []pluginapi.ExecutorStreamChunk) []byte {
 	var out []byte
 	for _, c := range chunks {

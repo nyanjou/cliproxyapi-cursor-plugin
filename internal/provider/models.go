@@ -14,15 +14,19 @@ import (
 type cursorModel struct{ ID, Name string }
 
 func (s *Service) StaticModels() pluginapi.ModelResponse {
-	return pluginapi.ModelResponse{Provider: providerID, Models: []pluginapi.ModelInfo{}}
+	return pluginapi.ModelResponse{Provider: providerID, Models: modelInfos(defaultCursorModels(), s.Config().ModelPrefix)}
 }
 
 func (s *Service) ModelsForAuth(ctx context.Context, _ string, _ pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
 	models, err := s.discoverModels(ctx)
 	if err != nil {
-		return pluginapi.ModelResponse{}, err
+		models = defaultCursorModels()
 	}
 	return pluginapi.ModelResponse{Provider: providerID, Models: modelInfos(models, s.Config().ModelPrefix)}, nil
+}
+
+func defaultCursorModels() []cursorModel {
+	return []cursorModel{{ID: "auto", Name: "Cursor Auto"}}
 }
 
 func (s *Service) discoverModels(ctx context.Context) ([]cursorModel, error) {

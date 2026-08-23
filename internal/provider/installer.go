@@ -28,7 +28,6 @@ const (
 	managementBasePath    = "/v0/management"
 	managementInstallPath = "/plugins/cursor/setup/install"
 	managementStatusPath  = "/plugins/cursor/setup/status"
-	managementQuotaPath   = "/plugins/cursor/quota"
 )
 
 type installerInfo struct {
@@ -110,9 +109,8 @@ func (s *Service) RegisterManagement(_ context.Context, _ pluginapi.ManagementRe
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: managementStatusPath, Description: "Reports managed official Cursor Agent CLI installation status.", Handler: s},
 			{Method: http.MethodPost, Path: managementInstallPath, Menu: "Install official Cursor Agent CLI", Description: "Explicitly installs the official Cursor Agent CLI into the plugin runtime HOME.", Handler: s},
-			{Method: http.MethodGet, Path: managementQuotaPath, Description: "Reports safe Cursor account fields from official agent about JSON; numeric remaining quota is unavailable.", Handler: s},
 		},
-		Resources: []pluginapi.ResourceRoute{{Path: "/setup", Menu: "Cursor Agent setup", Description: "Explains and confirms official Cursor Agent CLI installation.", Handler: s}, {Path: "/quota", Menu: "Cursor Quota", Description: "Static Cursor account/quota page; fetches account data only through the authenticated management API.", Handler: s}},
+		Resources: []pluginapi.ResourceRoute{{Path: "/setup", Menu: "Cursor Agent setup", Description: "Explains and confirms official Cursor Agent CLI installation.", Handler: s}},
 	}, nil
 }
 
@@ -124,14 +122,6 @@ func (s *Service) HandleManagement(ctx context.Context, req pluginapi.Management
 	switch {
 	case req.Method == http.MethodGet && (path == "/setup" || path == setupResourcePath):
 		return htmlResponse(setupHTML()), nil
-	case req.Method == http.MethodGet && path == "/quota":
-		return htmlResponse(quotaHTML()), nil
-	case req.Method == http.MethodGet && path == managementQuotaPath:
-		quota, err := s.CursorQuota(ctx)
-		if err != nil {
-			return jsonResponse(http.StatusBadGateway, map[string]any{"error": err.Error()}), nil
-		}
-		return jsonResponse(http.StatusOK, quota), nil
 	case req.Method == http.MethodGet && path == managementStatusPath:
 		return jsonResponse(http.StatusOK, s.InstallStatus()), nil
 	case req.Method == http.MethodPost && path == managementInstallPath:
@@ -163,13 +153,10 @@ func normalizeCursorManagementPath(raw string) (string, bool) {
 	if strings.HasPrefix(path, managementBasePath+"/") {
 		path = strings.TrimPrefix(path, managementBasePath)
 	}
-	if path == setupResourcePath || path == "/setup" || path == "/v0/resource/plugins/cliproxyapi-cursor/quota" {
-		if path == "/v0/resource/plugins/cliproxyapi-cursor/quota" {
-			return "/quota", true
-		}
+	if path == setupResourcePath || path == "/setup" {
 		return path, true
 	}
-	if path == "/quota" || path == managementStatusPath || path == managementInstallPath || path == managementQuotaPath {
+	if path == managementStatusPath || path == managementInstallPath {
 		return path, true
 	}
 	return "", false

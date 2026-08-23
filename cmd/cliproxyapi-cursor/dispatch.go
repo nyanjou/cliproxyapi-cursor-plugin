@@ -12,7 +12,7 @@ import (
 )
 
 var pluginService = provider.New(hostTransport{})
-var pluginVersion = "0.2.1"
+var pluginVersion = "0.3.0"
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -31,6 +31,7 @@ type registrationCapability struct {
 	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats  []string                     `json:"executor_input_formats"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats"`
+	UsagePlugin           bool                         `json:"usage_plugin"`
 	ManagementAPI         bool                         `json:"management_api"`
 }
 
@@ -168,6 +169,13 @@ func dispatch(method string, request []byte) (any, error) {
 			return nil, errUnmarshal
 		}
 		return pluginService.HTTP(ctx, req)
+	case pluginabi.MethodUsageHandle:
+		var req pluginapi.UsageRecord
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		pluginService.HandleUsage(ctx, req)
+		return map[string]any{}, nil
 	case pluginabi.MethodManagementRegister:
 		var req pluginapi.ManagementRegistrationRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -222,6 +230,7 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "Nyanjou; based on MIT-licensed arthur-sommer-etc cliproxyapi-copilot-plugin ABI scaffolding",
 			GitHubRepository: "https://github.com/nyanjou/cliproxyapi-cursor-plugin",
+			Logo:             provider.CursorLogoDataURI,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the Cursor Agent CLI-backed provider."},
 				{Name: "executable_path", Type: pluginapi.ConfigFieldTypeString, Description: "Path to the official Cursor Agent CLI executable (agent)."},
@@ -242,6 +251,7 @@ func pluginRegistration() registration {
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:  []string{"openai-response", "openai-chat", "claude"},
 			ExecutorOutputFormats: []string{"openai-response", "openai-chat", "claude"},
+			UsagePlugin:           true,
 			ManagementAPI:         true,
 		},
 	}

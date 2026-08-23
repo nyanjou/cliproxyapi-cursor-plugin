@@ -21,6 +21,10 @@ import (
 type cursorAuthStorage struct {
 	Type           string `json:"type"`
 	ExecutablePath string `json:"executable_path,omitempty"`
+	Email          string `json:"email,omitempty"`
+	Account        string `json:"account,omitempty"`
+	Tier           string `json:"tier,omitempty"`
+	Version        string `json:"version,omitempty"`
 	StatusKnown    bool   `json:"status_known,omitempty"`
 	Authenticated  bool   `json:"authenticated,omitempty"`
 	UpdatedAt      string `json:"updated_at,omitempty"`
@@ -38,7 +42,7 @@ func (s *Service) ParseAuth(req pluginapi.AuthParseRequest) (pluginapi.AuthParse
 	if err != nil {
 		return pluginapi.AuthParseResponse{}, err
 	}
-	return pluginapi.AuthParseResponse{Handled: true, Auth: auth}, nil
+	return authParseResponse(auth), nil
 }
 
 var cursorApprovalURLRE = regexp.MustCompile(`https://(?:www\.)?cursor\.com/[^\s"'<>]+`)
@@ -116,7 +120,7 @@ func (s *Service) PollLogin(ctx context.Context, _ string, state string) (plugin
 	if err != nil {
 		return pluginapi.AuthLoginPollResponse{}, err
 	}
-	return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusSuccess, Message: "Cursor CLI login available", Auth: auth}, nil
+	return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusSuccess, Message: "Cursor CLI login available", Auth: auth, Auths: []pluginapi.AuthData{auth}}, nil
 }
 
 func (s *Service) runAgentLoginStreaming(ctx context.Context, cfg Config, state string, urlCh chan<- string) (agentResult, error) {
@@ -247,6 +251,7 @@ func (s *Service) statusStorage(ctx context.Context) (cursorAuthStorage, error) 
 	known, authenticated := parseCursorAuthStatus(res.Stdout)
 	st.StatusKnown = known
 	st.Authenticated = authenticated
+	s.enrichStorageFromAbout(ctx, cfg, &st)
 	return st, nil
 }
 
@@ -339,9 +344,141 @@ func classifyAuthStatusString(value string) (known bool, authenticated bool) {
 }
 
 func (s *Service) authData(st cursorAuthStorage, fileName string) (pluginapi.AuthData, error) {
+	st.Type = providerID
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		fileName = "cursor-cli.json"
+	}
 	b, err := json.Marshal(st)
 	if err != nil {
 		return pluginapi.AuthData{}, err
 	}
-	return pluginapi.AuthData{Provider: providerID, ID: "cursor-cli", FileName: fileName, Label: "Cursor Agent CLI", StorageJSON: b, Metadata: map[string]any{"status_known": st.StatusKnown, "authenticated": st.Authenticated}, Attributes: map[string]string{"boundary": "official-cursor-agent-cli", "secrets": "not-read-by-plugin"}, NextRefreshAfter: s.now().Add(5 * time.Minute)}, nil
+	label := firstNonEmpty(st.Email, st.Account, "Cursor Agent CLI")
+	metadata := map[string]any{
+		"type":           providerID,
+		"auth_kind":      "oauth",
+		"status_known":   st.StatusKnown,
+		"authenticated":  st.Authenticated,
+		"quota_source":   "CPA observed requests and official Cursor CLI status/about metadata",
+		"quota_exposure": "official Cursor CLI does not expose numeric remaining subscription quota",
+	}
+	if st.Email != "" {
+		metadata["email"] = st.Email
+	}
+	if st.Account != "" {
+		metadata["account"] = st.Account
+	}
+	if st.Tier != "" {
+		metadata["tier"] = st.Tier
+		metadata["plan"] = st.Tier
+	}
+	if st.Version != "" {
+		metadata["version"] = st.Version
+		metadata["cli_version"] = st.Version
+	}
+	attributes := map[string]string{
+		"auth_kind": "oauth",
+		"boundary":  "official-cursor-agent-cli",
+		"secrets":   "not-read-by-plugin",
+	}
+	if st.Email != "" {
+		attributes["account_email"] = st.Email
+	}
+	return pluginapi.AuthData{Provider: providerID, ID: "cursor-cli", FileName: fileName, Label: label, StorageJSON: b, Metadata: metadata, Attributes: attributes, NextRefreshAfter: s.now().Add(5 * time.Minute)}, nil
+}
+
+func authParseResponse(auth pluginapi.AuthData) pluginapi.AuthParseResponse {
+	return pluginapi.AuthParseResponse{Handled: true, Auth: auth, Auths: []pluginapi.AuthData{auth}}
+}
+
+func (s *Service) enrichStorageFromAbout(ctx context.Context, cfg Config, st *cursorAuthStorage) {
+	if st == nil {
+		return
+	}
+	result, err := s.runAgent(ctx, cfg, []string{"about", "--format", "json"}, nil, false)
+	if err != nil {
+		return
+	}
+	about, err := parseCursorAbout(result.Stdout)
+	if err != nil {
+		return
+	}
+	if about.Account != "" {
+		st.Account = about.Account
+	}
+	if about.Email != "" {
+		st.Email = about.Email
+	} else if st.Email == "" && looksLikeEmail(about.Account) {
+		st.Email = about.Account
+	}
+	if about.Tier != "" {
+		st.Tier = about.Tier
+	}
+	if about.Version != "" {
+		st.Version = about.Version
+	}
+}
+
+type cursorAboutInfo struct {
+	Account string
+	Email   string
+	Tier    string
+	Version string
+}
+
+func parseCursorAbout(raw []byte) (cursorAboutInfo, error) {
+	var decoded map[string]any
+	dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(string(raw))))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
+		return cursorAboutInfo{}, fmt.Errorf("cursor agent about JSON was malformed")
+	}
+	account := firstSafeString(decoded, "account", "username", "name")
+	email := firstSafeString(decoded, "userEmail", "user_email", "email")
+	if email == "" {
+		email = safeAccountEmail(decoded["account"])
+	}
+	if account == "" {
+		account = safeAccount(decoded["account"])
+	}
+	return cursorAboutInfo{
+		Account: account,
+		Email:   email,
+		Tier:    firstSafeString(decoded, "tier", "plan", "subscriptionTier", "subscription_tier"),
+		Version: firstSafeString(decoded, "version", "cliVersion", "cli_version", "agentVersion", "agent_version", "cursorVersion", "cursor_version"),
+	}, nil
+}
+
+func safeAccountEmail(v any) string {
+	m, _ := v.(map[string]any)
+	if m == nil {
+		return ""
+	}
+	return firstSafeString(m, "email")
+}
+
+func safeAccount(v any) string {
+	s, _ := v.(string)
+	if strings.TrimSpace(s) != "" {
+		return strings.TrimSpace(s)
+	}
+	m, _ := v.(map[string]any)
+	if m == nil {
+		return ""
+	}
+	return firstSafeString(m, "email", "username", "name")
+}
+
+func firstSafeString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, _ := raw[key].(string); strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func looksLikeEmail(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.Contains(value, "@") && !strings.ContainsAny(value, " \t\r\n")
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -44,13 +45,12 @@ func TestManagementRegisterRPCEnvelopeDecodesLikeExternalHost(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &resp); err != nil {
 		t.Fatalf("decode plugin result management.register: %v: result=%s", err, envelope.Result)
 	}
-	if len(resp.Routes) != 3 {
+	if len(resp.Routes) != 2 {
 		t.Fatalf("routes=%#v", resp.Routes)
 	}
 	wantRoutes := map[string]string{
 		http.MethodGet + " /plugins/cursor/setup/status":   "Reports managed official Cursor Agent CLI installation status.",
 		http.MethodPost + " /plugins/cursor/setup/install": "Explicitly installs the official Cursor Agent CLI into the plugin runtime HOME.",
-		http.MethodGet + " /plugins/cursor/quota":          "Reports safe Cursor account fields from official agent about JSON; numeric remaining quota is unavailable.",
 	}
 	for _, route := range resp.Routes {
 		key := route.Method + " " + route.Path
@@ -61,22 +61,67 @@ func TestManagementRegisterRPCEnvelopeDecodesLikeExternalHost(t *testing.T) {
 			t.Fatalf("host-injected handler should be nil before adapter injection: %#v", route.Handler)
 		}
 	}
-	if len(resp.Resources) != 2 {
+	if len(resp.Resources) != 1 {
 		t.Fatalf("resources=%#v", resp.Resources)
 	}
-	foundSetup, foundQuota := false, false
+	foundSetup := false
 	for _, resource := range resp.Resources {
 		if resource.Path == "/setup" && resource.Menu == "Cursor Agent setup" && strings.Contains(resource.Description, "official Cursor Agent CLI") {
 			foundSetup = true
-		}
-		if resource.Path == "/quota" && resource.Menu == "Cursor Quota" && strings.Contains(resource.Description, "account") {
-			foundQuota = true
 		}
 		if resource.Handler != nil {
 			t.Fatalf("host-injected resource handler should be nil before adapter injection: %#v", resource.Handler)
 		}
 	}
-	if !foundSetup || !foundQuota {
+	if !foundSetup {
 		t.Fatalf("unexpected resources: %#v", resp.Resources)
+	}
+}
+
+func TestPluginRegisterIncludesLogoAndUsageCapability(t *testing.T) {
+	raw, failed := handleMethod(pluginabi.MethodPluginRegister, nil)
+	if failed {
+		t.Fatalf("plugin.register failed: %s", raw)
+	}
+
+	var envelope pluginabi.Envelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode envelope: %v: %s", err, raw)
+	}
+	var reg registration
+	if err := json.Unmarshal(envelope.Result, &reg); err != nil {
+		t.Fatalf("decode registration: %v: result=%s", err, envelope.Result)
+	}
+	if !strings.HasPrefix(reg.Metadata.Logo, "data:image/svg+xml;base64,") {
+		t.Fatalf("missing inline Cursor logo: %q", reg.Metadata.Logo)
+	}
+	if !reg.Capabilities.UsagePlugin {
+		t.Fatalf("usage plugin capability was not registered: %#v", reg.Capabilities)
+	}
+}
+
+func TestUsageHandleRecordsCursorUsage(t *testing.T) {
+	pluginService.Shutdown()
+	t.Cleanup(pluginService.Shutdown)
+	record := pluginapi.UsageRecord{
+		Provider:    "cursor",
+		Model:       "cursor/auto",
+		RequestedAt: time.Unix(1700000060, 0).UTC(),
+		Detail:      pluginapi.UsageDetail{InputTokens: 11, OutputTokens: 7, ReasoningTokens: 3, TotalTokens: 21},
+	}
+	rawRecord, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, failed := handleMethod(pluginabi.MethodUsageHandle, rawRecord); failed {
+		t.Fatalf("usage.handle failed: %s", raw)
+	}
+
+	usage := pluginService.GatewayUsage()
+	if usage.Requests != 1 {
+		t.Fatalf("usage requests not recorded: %#v", usage)
+	}
+	if usage.Totals.TotalTokens != 21 {
+		t.Fatalf("usage totals not recorded: %#v", usage)
 	}
 }

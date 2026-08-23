@@ -31,6 +31,10 @@ type Service struct {
 	logins  map[string]*loginSession
 
 	installMu sync.Mutex
+
+	usageMu      sync.Mutex
+	usageStarted time.Time
+	usageByModel map[string]*usageAggregate
 }
 
 type loginSession struct {
@@ -45,11 +49,12 @@ type loginSession struct {
 func New(host transport.Host) *Service {
 	cfg := DefaultConfig()
 	return &Service{
-		host:   host,
-		now:    time.Now,
-		config: cfg,
-		sem:    make(chan struct{}, cfg.MaxConcurrent),
-		logins: make(map[string]*loginSession),
+		host:         host,
+		now:          time.Now,
+		config:       cfg,
+		sem:          make(chan struct{}, cfg.MaxConcurrent),
+		logins:       make(map[string]*loginSession),
+		usageByModel: make(map[string]*usageAggregate),
 	}
 }
 
@@ -82,4 +87,8 @@ func (s *Service) Shutdown() {
 	s.loginMu.Lock()
 	clear(s.logins)
 	s.loginMu.Unlock()
+	s.usageMu.Lock()
+	s.usageStarted = time.Time{}
+	s.usageByModel = make(map[string]*usageAggregate)
+	s.usageMu.Unlock()
 }

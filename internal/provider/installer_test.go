@@ -39,7 +39,7 @@ func TestManagementRegistrationUsesActualExternalPluginResourceBase(t *testing.T
 	if err != nil {
 		t.Fatalf("RegisterManagement: %v", err)
 	}
-	if len(reg.Resources) != 2 || reg.Resources[0].Path != "/setup" || reg.Resources[1].Path != "/quota" {
+	if len(reg.Resources) != 1 || reg.Resources[0].Path != "/setup" {
 		t.Fatalf("resources = %#v", reg.Resources)
 	}
 	resource, err := s.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/cliproxyapi-cursor/setup"})
@@ -96,7 +96,7 @@ func TestManagementRegistrationSeparatesResourceAndAuthenticatedInstall(t *testi
 	if err != nil {
 		t.Fatalf("RegisterManagement: %v", err)
 	}
-	if len(reg.Resources) != 2 || reg.Resources[0].Path != "/setup" || reg.Resources[1].Path != "/quota" {
+	if len(reg.Resources) != 1 || reg.Resources[0].Path != "/setup" {
 		t.Fatalf("resources = %#v", reg.Resources)
 	}
 	statusRoutes := 0

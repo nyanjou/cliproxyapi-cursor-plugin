@@ -13,8 +13,8 @@ usage() {
 Usage: scripts/integration-cli-proxy-v72138.sh [--full-install]
 
 Starts a disposable, resource-limited CLIProxyAPI v7.2.138 container with the
-locally built cliproxyapi-cursor plugin and verifies external-host management
-RPC/resource behavior. --full-install additionally performs the explicit
+locally built cliproxyapi-cursor plugin and verifies external-host setup plus
+native auth-files/model data used by the built-in quota UI. --full-install additionally performs the explicit
 confirm=true official Cursor Agent package install in the disposable HOME and
 runs the installed agent --version. No shared CLIProxyAPI state is touched.
 USAGE
@@ -66,6 +66,14 @@ if [ "$1" = "about" ] && [ "$2" = "--format" ] && [ "$3" = "json" ]; then
   printf '%s\n' '{"userEmail":"smoke@example.test","subscriptionTier":"Pro","cliVersion":"smoke-cli-1"}'
   exit 0
 fi
+if [ "$1" = "status" ]; then
+  echo '{"authenticated":true}'
+  exit 0
+fi
+if [ "$1" = "models" ]; then
+  echo 'auto - Cursor Auto'
+  exit 0
+fi
 if [ "$1" = "--version" ]; then
   echo 'Cursor Agent smoke-cli-1'
   exit 0
@@ -73,6 +81,9 @@ fi
 exit 64
 SH
 chmod 755 "$TMP/cursor-home/fake-bin/agent"
+cat >"$TMP/auth/cursor-cli.json" <<'JSON'
+{"type":"cursor","email":"smoke@example.test","tier":"Pro","version":"smoke-cli-1","authenticated":true,"status_known":true}
+JSON
 python3 - "$PORT" "$TMP/config.yaml" "$API_KEY" <<'PY'
 import pathlib, sys
 port, out, api_key = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
@@ -121,10 +132,12 @@ UNAUTH_CODE=$(curl -sS -o "$TMP/status_unauth.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/setup/status")
 QUOTA_RESOURCE_CODE=$(curl -sS -o "$TMP/quota.html" -w '%{http_code}' \
   "$BASE/v0/resource/plugins/cliproxyapi-cursor/quota")
-QUOTA_UNAUTH_CODE=$(curl -sS -o "$TMP/quota_unauth.json" -w '%{http_code}' \
-  "$BASE/v0/management/plugins/cursor/quota")
-QUOTA_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/quota.json" -w '%{http_code}' \
-  "$BASE/v0/management/plugins/cursor/quota")
+AUTH_FILES_UNAUTH_CODE=$(curl -sS -o "$TMP/auth_files_unauth.json" -w '%{http_code}' \
+  "$BASE/v0/management/auth-files")
+AUTH_FILES_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/auth_files.json" -w '%{http_code}' \
+  "$BASE/v0/management/auth-files")
+AUTH_MODELS_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/auth_models.json" -w '%{http_code}' \
+  "$BASE/v0/management/auth-files/models?name=cursor-cli.json")
 STATUS_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/status_before.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/setup/status")
 CONFIRM_FALSE_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -H 'Content-Type: application/json' \
@@ -134,29 +147,34 @@ CONFUSED_CODE=$(curl --path-as-is -sS -H "Authorization: Bearer $MANAGEMENT_KEY"
   -d '{"confirm":false}' -o "$TMP/path_confusion.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/../cursor/setup/install")
 
-python3 - "$RESOURCE_CODE" "$TMP/setup.headers" "$UNAUTH_CODE" "$QUOTA_RESOURCE_CODE" "$QUOTA_UNAUTH_CODE" "$QUOTA_CODE" "$TMP/quota.json" "$TMP/quota.html" "$STATUS_CODE" "$TMP/status_before.json" "$CONFIRM_FALSE_CODE" "$TMP/install_false.json" "$CONFUSED_CODE" <<'PY'
+python3 - "$RESOURCE_CODE" "$TMP/setup.headers" "$UNAUTH_CODE" "$QUOTA_RESOURCE_CODE" "$AUTH_FILES_UNAUTH_CODE" "$AUTH_FILES_CODE" "$TMP/auth_files.json" "$AUTH_MODELS_CODE" "$TMP/auth_models.json" "$STATUS_CODE" "$TMP/status_before.json" "$CONFIRM_FALSE_CODE" "$TMP/install_false.json" "$CONFUSED_CODE" <<'PY'
 import json, pathlib, sys
-resource_code, headers_path, unauth_code, quota_resource_code, quota_unauth_code, quota_code, quota_path, quota_html_path, status_code, status_path, false_code, false_path, confused_code = sys.argv[1:]
+resource_code, headers_path, unauth_code, quota_resource_code, auth_files_unauth_code, auth_files_code, auth_files_path, auth_models_code, auth_models_path, status_code, status_path, false_code, false_path, confused_code = sys.argv[1:]
 headers = pathlib.Path(headers_path).read_text().lower()
-quota = json.loads(pathlib.Path(quota_path).read_text())
-quota_html = pathlib.Path(quota_html_path).read_text()
+auth_files = json.loads(pathlib.Path(auth_files_path).read_text())
+auth_models = json.loads(pathlib.Path(auth_models_path).read_text())
 status = json.loads(pathlib.Path(status_path).read_text())
 confirm_false = json.loads(pathlib.Path(false_path).read_text())
 assert resource_code == '200', resource_code
 assert 'content-type: text/html' in headers, headers
 assert unauth_code == '401', unauth_code
-assert quota_resource_code == '200', quota_resource_code
-assert quota_unauth_code == '401', quota_unauth_code
-assert quota_code == '200', (quota_code, quota)
-assert quota.get('account') == 'smoke@example.test' and quota.get('tier') == 'Pro' and quota.get('version') == 'smoke-cli-1', quota
-assert quota.get('remaining_quota', {}).get('available') is False, quota
-assert 'localStorage' not in quota_html and 'sessionStorage' not in quota_html, quota_html
+assert quota_resource_code == '404', quota_resource_code
+assert auth_files_unauth_code == '401', auth_files_unauth_code
+assert auth_files_code == '200', (auth_files_code, auth_files)
+cursor_files = [item for item in auth_files.get('files', []) if item.get('provider') == 'cursor']
+assert len(cursor_files) == 1, auth_files
+cursor = cursor_files[0]
+assert cursor.get('name') == 'cursor-cli.json' and cursor.get('email') == 'smoke@example.test', cursor
+assert cursor.get('account_type') == 'oauth' and cursor.get('account') == 'smoke@example.test', cursor
+assert cursor.get('success') == 0 and cursor.get('failed') == 0 and 'recent_requests' in cursor, cursor
+assert auth_models_code == '200', (auth_models_code, auth_models)
+assert any(model.get('id') == 'cursor/auto' for model in auth_models.get('models', [])), auth_models
 assert status_code == '200', (status_code, status)
 assert status.get('installed') is False, status
 assert false_code == '400', (false_code, confirm_false)
 assert confirm_false.get('installed') is False and 'explicit confirmation' in confirm_false.get('error', ''), confirm_false
 assert confused_code == '404', confused_code
-print('smoke_verified resource=200 unauth=401 quota_resource=200 quota_unauth=401 quota_auth=200 status_installed=false confirm_false=400 path_confusion=404')
+print('smoke_verified resource=200 unauth=401 quota_resource=404 auth_files=200 auth_models=200 status_installed=false confirm_false=400 path_confusion=404')
 PY
 
 if [ "$FULL_INSTALL" = "1" ]; then
@@ -188,9 +206,9 @@ if grep -q 'management registrar cliproxyapi-cursor failed' "$TMP/docker.log"; t
   echo 'management registrar failure found in container log' >&2
   exit 1
 fi
-if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.2.1' "$TMP/docker.log"; then
-  echo 'plugin registration log for cliproxyapi-cursor v0.2.1 not found' >&2
+if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.3.0' "$TMP/docker.log"; then
+  echo 'plugin registration log for cliproxyapi-cursor v0.3.0 not found' >&2
   exit 1
 fi
 
-echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.2.1 no_registrar_failures=true quota_auth=200'
+echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.3.0 no_registrar_failures=true native_auth_files=200 native_auth_models=200'

@@ -12,7 +12,7 @@ import (
 )
 
 var pluginService = provider.New(hostTransport{})
-var pluginVersion = "0.2.0"
+var pluginVersion = "0.2.1"
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -225,7 +225,7 @@ func pluginRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable the Cursor Agent CLI-backed provider."},
 				{Name: "executable_path", Type: pluginapi.ConfigFieldTypeString, Description: "Path to the official Cursor Agent CLI executable (agent)."},
-				{Name: "workspace", Type: pluginapi.ConfigFieldTypeString, Description: "Dedicated empty workspace used for all read-only ask-mode CLI runs."},
+				{Name: "workspace", Type: pluginapi.ConfigFieldTypeString, Description: "Dedicated empty parent directory; each ask-mode CLI run uses a fresh private child workspace with Cursor sandbox disabled."},
 				{Name: "model_prefix", Type: pluginapi.ConfigFieldTypeString, Description: "Optional prefix added to discovered Cursor model IDs."},
 				{Name: "allowed_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional allowlist of Cursor model IDs from agent models."},
 				{Name: "denied_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional denylist of Cursor model IDs from agent models."},

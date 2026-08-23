@@ -1,8 +1,8 @@
 # CLIProxyAPI Cursor Agent CLI provider
 
-Experimental v0.2.0 CLIProxyAPI provider for Cursor subscription models through the official `agent` CLI only.
+Experimental v0.2.1 CLIProxyAPI provider for Cursor subscription models through the official `agent` CLI only.
 
-This is not a raw Cursor inference API wrapper. It preserves Cursor's official agent harness by spawning the authenticated `agent` executable with direct argv in print/ask mode, sandbox enabled, and a fresh private empty workspace per invocation. The plugin never calls Cursor private endpoints, never reads or stores OAuth material, never creates or uses `CURSOR_API_KEY`, and never invokes a shell for model requests.
+This is not a raw Cursor inference API wrapper. It preserves Cursor's official agent harness by spawning the authenticated `agent` executable with direct argv in print/ask mode, sandbox disabled, and a fresh private empty workspace per invocation. The plugin never calls Cursor private endpoints, never reads or stores OAuth material, never creates or uses `CURSOR_API_KEY`, and never invokes a shell for model requests.
 
 Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-sommer-etc/cliproxyapi-copilot-plugin`; Cursor-specific provider logic is separate and documented here.
 
@@ -27,6 +27,12 @@ Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-som
 - Raw provider HTTP proxying is forbidden; this provider does not expose Cursor endpoints.
 - Authentication is the official Cursor CLI browser session. If `agent` is missing, login returns the same-origin `/v0/resource/plugins/cliproxyapi-cursor/setup` page instead of an exec error. Approval URLs may be shown; credentials, auth files, emails, and tokens must not be stored or logged by this plugin.
 
+## Cursor quota/account visibility
+
+The plugin exposes a native management resource named `Cursor Quota` at `/v0/resource/plugins/cliproxyapi-cursor/quota`. The static unauthenticated HTML contains no account data and keeps the CLIProxyAPI management key only in current page memory. It fetches `/v0/management/plugins/cursor/quota`, which is management-authenticated and runs only `agent about --format json` through the same bounded safe runner.
+
+Only safe fields from official Cursor CLI output are returned (`userEmail`/account, `subscriptionTier`, and `cliVersion`/version). Numeric remaining subscription quota is explicitly reported as unavailable because the official `agent about` JSON does not expose it. The plugin does not read Cursor OAuth/token files and does not call private Cursor endpoints. Stock CPA Manager Plus has a hard-coded Quota page; CLIProxyAPI plugin ABI v7.2.138 cannot inject a section there, so this plugin resource is the supported Cursor quota/account view.
+
 ## Build and test
 
 Requirements: Go 1.26 for tests and Docker for the production Bookworm-compatible build.
@@ -39,14 +45,14 @@ go vet ./...
 make build
 scripts/integration-cli-proxy-v72138.sh
 scripts/integration-cli-proxy-v72138.sh --full-install
-scripts/package-release.sh 0.2.0
+scripts/package-release.sh 0.2.1
 ```
 
 Artifacts:
 
 ```text
 build/plugins/linux/amd64/cliproxyapi-cursor.so
-dist/cliproxyapi-cursor_0.2.0_linux_amd64.zip
+dist/cliproxyapi-cursor_0.2.1_linux_amd64.zip
 dist/checksums.txt
 ```
 
@@ -55,10 +61,10 @@ Inspect the store ZIP before publishing:
 ```sh
 python3 - <<'PY'
 import zipfile
-with zipfile.ZipFile('dist/cliproxyapi-cursor_0.2.0_linux_amd64.zip') as z:
+with zipfile.ZipFile('dist/cliproxyapi-cursor_0.2.1_linux_amd64.zip') as z:
     print(z.namelist())
 PY
-sha256sum dist/cliproxyapi-cursor_0.2.0_linux_amd64.zip
+sha256sum dist/cliproxyapi-cursor_0.2.1_linux_amd64.zip
 ```
 
 ## Configuration
@@ -122,4 +128,4 @@ Offline/manual fallback: preinstall the official Cursor Agent CLI in the runtime
 
 ## Release workflow
 
-Create and push a semantic tag such as `v0.2.0`, then run the **Release** workflow manually with that existing tag. The workflow validates the tag, checks out the tagged source, reruns tests, builds `cliproxyapi-cursor_<version>_linux_amd64.zip`, writes `checksums.txt`, and creates or safely replaces that tag's assets. CI is also manual or pull-request-only to avoid duplicate push/tag runs.
+Create and push a semantic tag such as `v0.2.1`, then run the **Release** workflow manually with that existing tag. The workflow validates the tag, checks out the tagged source, reruns tests, builds `cliproxyapi-cursor_<version>_linux_amd64.zip`, writes `checksums.txt`, and creates or safely replaces that tag's assets. CI is also manual or pull-request-only to avoid duplicate push/tag runs.

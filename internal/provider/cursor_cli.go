@@ -208,7 +208,7 @@ func redactCursorError(text string) string {
 }
 
 func cursorPromptArgs(_ Config, model, format string, stream bool, prompt string) []string {
-	args := []string{"-p", "--trust", "--mode", "ask", "--sandbox", "enabled", "--workspace", workspaceArgPlaceholder, "--model", model, "--output-format", format}
+	args := []string{"-p", "--trust", "--mode", "ask", "--sandbox", "disabled", "--workspace", workspaceArgPlaceholder, "--model", model, "--output-format", format}
 	if stream {
 		args = append(args, "--stream-partial-output")
 	}

@@ -64,7 +64,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (pluginapi.Ex
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, err
 	}
-	return pluginapi.ExecutorResponse{Payload: payload, Headers: jsonHeaders(), Metadata: map[string]any{"cursor_cli": true, "cursor_model": model, "harness": "official-agent-cli-ask-sandbox"}}, nil
+	return pluginapi.ExecutorResponse{Payload: payload, Headers: jsonHeaders(), Metadata: map[string]any{"cursor_cli": true, "cursor_model": model, "harness": "official-agent-cli-ask-sandbox-disabled"}}, nil
 }
 
 func (s *Service) ExecuteStream(ctx context.Context, req ExecuteRequest) (http.Header, error) {

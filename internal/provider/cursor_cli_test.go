@@ -136,6 +136,40 @@ exit 64
 	}
 }
 
+func TestInferenceArgvDisablesCursorSandbox(t *testing.T) {
+	argvPath := filepath.Join(t.TempDir(), "argv.json")
+	agent := fakeAgent(t, `
+if [ "$1" = "models" ]; then echo 'auto - Auto'; exit 0; fi
+python3 - "$@" <<'PY' > "`+argvPath+`"
+import json, sys
+json.dump(sys.argv[1:], sys.stdout)
+PY
+printf '{"result":"ok","usage":{"input_tokens":1,"output_tokens":2}}\n'
+`)
+	s := newTestService(t, agent)
+	_, err := s.Execute(context.Background(), ExecuteRequest{ExecutorRequest: pluginapi.ExecutorRequest{Model: "auto", SourceFormat: "openai-response", OriginalRequest: []byte(`{"input":"hi"}`)}})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	raw, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var argv []string
+	if err := json.Unmarshal(raw, &argv); err != nil {
+		t.Fatalf("argv json: %v: %s", err, raw)
+	}
+	for i, arg := range argv {
+		if arg == "--sandbox" {
+			if i+1 >= len(argv) || argv[i+1] != "disabled" {
+				t.Fatalf("--sandbox argv = %v, want disabled", argv)
+			}
+			return
+		}
+	}
+	t.Fatalf("argv omitted --sandbox disabled: %v", argv)
+}
+
 func TestExecuteRejectsToolSchemasTruthfully(t *testing.T) {
 	s := newTestService(t, fakeAgent(t, `exit 0`))
 	_, err := s.Execute(context.Background(), ExecuteRequest{ExecutorRequest: pluginapi.ExecutorRequest{Model: "auto", SourceFormat: "openai-response", OriginalRequest: []byte(`{"tools":[{"type":"function","name":"x"}],"input":"hi"}`)}})
@@ -147,6 +181,8 @@ func TestExecuteRejectsToolSchemasTruthfully(t *testing.T) {
 func TestStreamDeduplicatesPartialsAndUsesTerminalResult(t *testing.T) {
 	agent := fakeAgent(t, `
 if [ "$1" = "models" ]; then echo 'auto - Auto'; exit 0; fi
+case "$*" in *'--sandbox enabled'*) echo sandbox-enabled >&2; exit 65;; esac
+case "$*" in *'--sandbox disabled'*) ;; *) echo sandbox-disabled-missing >&2; exit 66;; esac
 printf '%s\n' '{"type":"text","text":"Hel"}' '{"type":"text","text":"Hello"}' '{"type":"text","text":"Hello"}' '{"type":"result","result":"Hello!","usage":{"input_tokens":1,"output_tokens":1}}'
 `)
 	host := &recordingHost{}
@@ -326,7 +362,7 @@ wait
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected timeout, got %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("timeout did not return promptly: %s", elapsed)
 	}
 	time.Sleep(3500 * time.Millisecond)

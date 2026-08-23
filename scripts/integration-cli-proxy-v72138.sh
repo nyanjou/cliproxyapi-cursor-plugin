@@ -59,6 +59,20 @@ trap cleanup EXIT
 
 mkdir -p "$TMP/plugins/linux/amd64" "$TMP/logs" "$TMP/auth" "$TMP/cursor-home" "$TMP/workspaces"
 cp "$PLUGIN_SO" "$TMP/plugins/linux/amd64/cliproxyapi-cursor.so"
+mkdir -p "$TMP/cursor-home/fake-bin"
+cat >"$TMP/cursor-home/fake-bin/agent" <<'SH'
+#!/bin/sh
+if [ "$1" = "about" ] && [ "$2" = "--format" ] && [ "$3" = "json" ]; then
+  printf '%s\n' '{"userEmail":"smoke@example.test","subscriptionTier":"Pro","cliVersion":"smoke-cli-1"}'
+  exit 0
+fi
+if [ "$1" = "--version" ]; then
+  echo 'Cursor Agent smoke-cli-1'
+  exit 0
+fi
+exit 64
+SH
+chmod 755 "$TMP/cursor-home/fake-bin/agent"
 python3 - "$PORT" "$TMP/config.yaml" "$API_KEY" <<'PY'
 import pathlib, sys
 port, out, api_key = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
@@ -68,6 +82,7 @@ replacements = {
     '__CLIPROXYAPI_API_KEY__': api_key,
     'dir: "plugins"': 'dir: "/plugins"',
     'auth-dir: "/root/.cli-proxy-api"': 'auth-dir: "/auth"',
+    'executable_path: "agent"': 'executable_path: "/cursor-home/fake-bin/agent"',
     'workspace: "/var/lib/cliproxyapi-cursor/workspaces"': 'workspace: "/workspaces"',
 }
 for old, new in replacements.items():
@@ -104,6 +119,12 @@ RESOURCE_CODE=$(curl -sS -D "$TMP/setup.headers" -o "$TMP/setup.html" -w '%{http
   "$BASE/v0/resource/plugins/cliproxyapi-cursor/setup")
 UNAUTH_CODE=$(curl -sS -o "$TMP/status_unauth.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/setup/status")
+QUOTA_RESOURCE_CODE=$(curl -sS -o "$TMP/quota.html" -w '%{http_code}' \
+  "$BASE/v0/resource/plugins/cliproxyapi-cursor/quota")
+QUOTA_UNAUTH_CODE=$(curl -sS -o "$TMP/quota_unauth.json" -w '%{http_code}' \
+  "$BASE/v0/management/plugins/cursor/quota")
+QUOTA_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/quota.json" -w '%{http_code}' \
+  "$BASE/v0/management/plugins/cursor/quota")
 STATUS_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/status_before.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/setup/status")
 CONFIRM_FALSE_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -H 'Content-Type: application/json' \
@@ -113,21 +134,29 @@ CONFUSED_CODE=$(curl --path-as-is -sS -H "Authorization: Bearer $MANAGEMENT_KEY"
   -d '{"confirm":false}' -o "$TMP/path_confusion.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/../cursor/setup/install")
 
-python3 - "$RESOURCE_CODE" "$TMP/setup.headers" "$UNAUTH_CODE" "$STATUS_CODE" "$TMP/status_before.json" "$CONFIRM_FALSE_CODE" "$TMP/install_false.json" "$CONFUSED_CODE" <<'PY'
+python3 - "$RESOURCE_CODE" "$TMP/setup.headers" "$UNAUTH_CODE" "$QUOTA_RESOURCE_CODE" "$QUOTA_UNAUTH_CODE" "$QUOTA_CODE" "$TMP/quota.json" "$TMP/quota.html" "$STATUS_CODE" "$TMP/status_before.json" "$CONFIRM_FALSE_CODE" "$TMP/install_false.json" "$CONFUSED_CODE" <<'PY'
 import json, pathlib, sys
-resource_code, headers_path, unauth_code, status_code, status_path, false_code, false_path, confused_code = sys.argv[1:]
+resource_code, headers_path, unauth_code, quota_resource_code, quota_unauth_code, quota_code, quota_path, quota_html_path, status_code, status_path, false_code, false_path, confused_code = sys.argv[1:]
 headers = pathlib.Path(headers_path).read_text().lower()
+quota = json.loads(pathlib.Path(quota_path).read_text())
+quota_html = pathlib.Path(quota_html_path).read_text()
 status = json.loads(pathlib.Path(status_path).read_text())
 confirm_false = json.loads(pathlib.Path(false_path).read_text())
 assert resource_code == '200', resource_code
 assert 'content-type: text/html' in headers, headers
 assert unauth_code == '401', unauth_code
+assert quota_resource_code == '200', quota_resource_code
+assert quota_unauth_code == '401', quota_unauth_code
+assert quota_code == '200', (quota_code, quota)
+assert quota.get('account') == 'smoke@example.test' and quota.get('tier') == 'Pro' and quota.get('version') == 'smoke-cli-1', quota
+assert quota.get('remaining_quota', {}).get('available') is False, quota
+assert 'localStorage' not in quota_html and 'sessionStorage' not in quota_html, quota_html
 assert status_code == '200', (status_code, status)
 assert status.get('installed') is False, status
 assert false_code == '400', (false_code, confirm_false)
 assert confirm_false.get('installed') is False and 'explicit confirmation' in confirm_false.get('error', ''), confirm_false
 assert confused_code == '404', confused_code
-print('smoke_verified resource=200 unauth=401 status_installed=false confirm_false=400 path_confusion=404')
+print('smoke_verified resource=200 unauth=401 quota_resource=200 quota_unauth=401 quota_auth=200 status_installed=false confirm_false=400 path_confusion=404')
 PY
 
 if [ "$FULL_INSTALL" = "1" ]; then
@@ -159,9 +188,9 @@ if grep -q 'management registrar cliproxyapi-cursor failed' "$TMP/docker.log"; t
   echo 'management registrar failure found in container log' >&2
   exit 1
 fi
-if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.2.0' "$TMP/docker.log"; then
-  echo 'plugin registration log for cliproxyapi-cursor v0.2.0 not found' >&2
+if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.2.1' "$TMP/docker.log"; then
+  echo 'plugin registration log for cliproxyapi-cursor v0.2.1 not found' >&2
   exit 1
 fi
 
-echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.2.0 no_registrar_failures=true'
+echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.2.1 no_registrar_failures=true quota_auth=200'

@@ -1,6 +1,6 @@
 # Install Cursor provider into an existing CLIProxyAPI deployment
 
-This plugin is `cliproxyapi-cursor` v0.2.0. It invokes only the official Cursor Agent CLI (`agent`) with direct argv. It does not proxy Cursor private endpoints and does not read or store Cursor credentials.
+This plugin is `cliproxyapi-cursor` v0.2.1. It invokes only the official Cursor Agent CLI (`agent`) with direct argv. It does not proxy Cursor private endpoints and does not read or store Cursor credentials.
 
 ## Build
 

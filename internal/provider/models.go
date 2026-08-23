@@ -123,7 +123,7 @@ func modelInfos(models []cursorModel, prefix string) []pluginapi.ModelInfo {
 		if name == "" {
 			name = model.ID
 		}
-		out = append(out, pluginapi.ModelInfo{ID: id, Object: "model", OwnedBy: "cursor", Type: "chat", DisplayName: name, Name: model.ID, Description: "Experimental Cursor Agent CLI-backed model; runs through official agent CLI in read-only ask mode", SupportedGenerationMethods: []string{"openai-response", "openai-chat", "claude"}, SupportedParameters: []string{"stream"}, SupportedInputModalities: []string{"TEXT"}, SupportedOutputModalities: []string{"TEXT"}, Created: time.Now().Unix()})
+		out = append(out, pluginapi.ModelInfo{ID: id, Object: "model", OwnedBy: "cursor", Type: "chat", DisplayName: name, Name: model.ID, Description: "Experimental Cursor Agent CLI-backed model; runs through official agent CLI in ask mode with sandbox disabled in a fresh private workspace", SupportedGenerationMethods: []string{"openai-response", "openai-chat", "claude"}, SupportedParameters: []string{"stream"}, SupportedInputModalities: []string{"TEXT"}, SupportedOutputModalities: []string{"TEXT"}, Created: time.Now().Unix()})
 	}
 	return out
 }

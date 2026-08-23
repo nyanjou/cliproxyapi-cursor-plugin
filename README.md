@@ -1,6 +1,6 @@
 # CLIProxyAPI Cursor Agent CLI provider
 
-Experimental v0.3.0 CLIProxyAPI provider for Cursor subscription models through the official `agent` CLI only.
+Experimental v0.4.0 CLIProxyAPI provider for Cursor subscription models through the official `agent` CLI only.
 
 This is not a raw Cursor inference API wrapper. It preserves Cursor's official agent harness by spawning the authenticated `agent` executable with direct argv in print/ask mode, sandbox disabled, and a fresh private empty workspace per invocation. The plugin never calls Cursor private endpoints, never reads or stores OAuth material, never creates or uses `CURSOR_API_KEY`, and never invokes a shell for model requests.
 
@@ -15,7 +15,7 @@ Licensed under MIT. ABI/scaffolding is derived from the MIT-licensed `arthur-som
 - Login starts `NO_OPEN_BROWSER=1 agent login` directly, streams and redacts bounded output, and exposes exactly one Cursor approval URL promptly instead of waiting for process exit.
 - Model discovery via `agent models`.
 - Non-streaming OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages inputs converted to bounded text prompts for Cursor ask mode.
-- Streaming via `agent -p --output-format stream-json --stream-partial-output`, emitted to CLIProxyAPI as bare NDJSON (`application/x-ndjson`), with duplicate partial suppression and terminal result/usage treated as canonical.
+- Streaming requests run the official CLI with `agent --print --output-format json --sandbox disabled` and return buffered, protocol-correct SSE frames after the terminal JSON result is validated.
 - Native CLIProxyAPI auth/model registration so Cursor credentials appear in the built-in Auth Files and Quota Management views with CPA-observed request health and quota cooldown state.
 - Usage plugin support for gateway-observed Cursor request and token counters.
 - Inline Cursor logo metadata for management clients.
@@ -48,14 +48,14 @@ go vet ./...
 make build
 scripts/integration-cli-proxy-v72138.sh
 scripts/integration-cli-proxy-v72138.sh --full-install
-scripts/package-release.sh 0.3.0
+scripts/package-release.sh 0.4.0
 ```
 
 Artifacts:
 
 ```text
 build/plugins/linux/amd64/cliproxyapi-cursor.so
-dist/cliproxyapi-cursor_0.3.0_linux_amd64.zip
+dist/cliproxyapi-cursor_0.4.0_linux_amd64.zip
 dist/checksums.txt
 ```
 
@@ -64,10 +64,10 @@ Inspect the store ZIP before publishing:
 ```sh
 python3 - <<'PY'
 import zipfile
-with zipfile.ZipFile('dist/cliproxyapi-cursor_0.3.0_linux_amd64.zip') as z:
+with zipfile.ZipFile('dist/cliproxyapi-cursor_0.4.0_linux_amd64.zip') as z:
     print(z.namelist())
 PY
-sha256sum dist/cliproxyapi-cursor_0.3.0_linux_amd64.zip
+sha256sum dist/cliproxyapi-cursor_0.4.0_linux_amd64.zip
 ```
 
 ## Configuration
@@ -131,4 +131,4 @@ Offline/manual fallback: preinstall the official Cursor Agent CLI in the runtime
 
 ## Release workflow
 
-Create and push a semantic tag such as `v0.3.0`, then run the **Release** workflow manually with that existing tag. The workflow validates the tag, checks out the tagged source, reruns tests, builds `cliproxyapi-cursor_<version>_linux_amd64.zip`, writes `checksums.txt`, and creates or safely replaces that tag's assets. CI is also manual or pull-request-only to avoid duplicate push/tag runs.
+Create and push a semantic tag such as `v0.4.0`, then run the **Release** workflow manually with that existing tag. The workflow validates the tag, checks out the tagged source, reruns tests, builds `cliproxyapi-cursor_<version>_linux_amd64.zip`, writes `checksums.txt`, and creates or safely replaces that tag's assets. CI is also manual or pull-request-only to avoid duplicate push/tag runs.

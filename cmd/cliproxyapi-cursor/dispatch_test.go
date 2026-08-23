@@ -45,10 +45,11 @@ func TestManagementRegisterRPCEnvelopeDecodesLikeExternalHost(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result, &resp); err != nil {
 		t.Fatalf("decode plugin result management.register: %v: result=%s", err, envelope.Result)
 	}
-	if len(resp.Routes) != 2 {
+	if len(resp.Routes) != 3 {
 		t.Fatalf("routes=%#v", resp.Routes)
 	}
 	wantRoutes := map[string]string{
+		http.MethodGet + " /plugins/cursor/quota":          "Reports safe Cursor account metadata and usage observed by CLIProxyAPI.",
 		http.MethodGet + " /plugins/cursor/setup/status":   "Reports managed official Cursor Agent CLI installation status.",
 		http.MethodPost + " /plugins/cursor/setup/install": "Explicitly installs the official Cursor Agent CLI into the plugin runtime HOME.",
 	}

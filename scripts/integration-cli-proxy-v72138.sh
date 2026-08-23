@@ -78,6 +78,14 @@ if [ "$1" = "--version" ]; then
   echo 'Cursor Agent smoke-cli-1'
   exit 0
 fi
+if [ "$1" = "--print" ]; then
+  if [ "$2" != "--output-format" ] || [ "$3" != "json" ] || [ "$4" != "--sandbox" ] || [ "$5" != "disabled" ]; then
+    echo 'missing required print/json/sandbox flags' >&2
+    exit 64
+  fi
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"INTEGRATION_OK","usage":{"inputTokens":11,"outputTokens":3}}'
+  exit 0
+fi
 exit 64
 SH
 chmod 755 "$TMP/cursor-home/fake-bin/agent"
@@ -140,6 +148,14 @@ AUTH_MODELS_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/
   "$BASE/v0/management/auth-files/models?name=cursor-cli.json")
 STATUS_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/status_before.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/setup/status")
+RESPONSES_CODE=$(curl -sS -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"cursor/auto","input":"Reply with INTEGRATION_OK","stream":false}' \
+  -o "$TMP/responses.json" -w '%{http_code}' "$BASE/v1/responses")
+STREAM_CODE=$(curl -sS -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"cursor/auto","input":"Reply with INTEGRATION_OK","stream":true}' \
+  -o "$TMP/responses.stream" -w '%{http_code}' "$BASE/v1/responses")
+QUOTA_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -o "$TMP/quota.json" -w '%{http_code}' \
+  "$BASE/v0/management/plugins/cursor/quota")
 CONFIRM_FALSE_CODE=$(curl -sS -H "Authorization: Bearer $MANAGEMENT_KEY" -H 'Content-Type: application/json' \
   -d '{"confirm":false}' -o "$TMP/install_false.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/setup/install")
@@ -147,13 +163,16 @@ CONFUSED_CODE=$(curl --path-as-is -sS -H "Authorization: Bearer $MANAGEMENT_KEY"
   -d '{"confirm":false}' -o "$TMP/path_confusion.json" -w '%{http_code}' \
   "$BASE/v0/management/plugins/cursor/../cursor/setup/install")
 
-python3 - "$RESOURCE_CODE" "$TMP/setup.headers" "$UNAUTH_CODE" "$QUOTA_RESOURCE_CODE" "$AUTH_FILES_UNAUTH_CODE" "$AUTH_FILES_CODE" "$TMP/auth_files.json" "$AUTH_MODELS_CODE" "$TMP/auth_models.json" "$STATUS_CODE" "$TMP/status_before.json" "$CONFIRM_FALSE_CODE" "$TMP/install_false.json" "$CONFUSED_CODE" <<'PY'
+python3 - "$RESOURCE_CODE" "$TMP/setup.headers" "$UNAUTH_CODE" "$QUOTA_RESOURCE_CODE" "$AUTH_FILES_UNAUTH_CODE" "$AUTH_FILES_CODE" "$TMP/auth_files.json" "$AUTH_MODELS_CODE" "$TMP/auth_models.json" "$STATUS_CODE" "$TMP/status_before.json" "$RESPONSES_CODE" "$TMP/responses.json" "$STREAM_CODE" "$TMP/responses.stream" "$QUOTA_CODE" "$TMP/quota.json" "$CONFIRM_FALSE_CODE" "$TMP/install_false.json" "$CONFUSED_CODE" <<'PY'
 import json, pathlib, sys
-resource_code, headers_path, unauth_code, quota_resource_code, auth_files_unauth_code, auth_files_code, auth_files_path, auth_models_code, auth_models_path, status_code, status_path, false_code, false_path, confused_code = sys.argv[1:]
+resource_code, headers_path, unauth_code, quota_resource_code, auth_files_unauth_code, auth_files_code, auth_files_path, auth_models_code, auth_models_path, status_code, status_path, responses_code, responses_path, stream_code, stream_path, quota_code, quota_path, false_code, false_path, confused_code = sys.argv[1:]
 headers = pathlib.Path(headers_path).read_text().lower()
 auth_files = json.loads(pathlib.Path(auth_files_path).read_text())
 auth_models = json.loads(pathlib.Path(auth_models_path).read_text())
 status = json.loads(pathlib.Path(status_path).read_text())
+responses = json.loads(pathlib.Path(responses_path).read_text())
+stream = pathlib.Path(stream_path).read_text()
+quota = json.loads(pathlib.Path(quota_path).read_text())
 confirm_false = json.loads(pathlib.Path(false_path).read_text())
 assert resource_code == '200', resource_code
 assert 'content-type: text/html' in headers, headers
@@ -171,10 +190,20 @@ assert auth_models_code == '200', (auth_models_code, auth_models)
 assert any(model.get('id') == 'cursor/auto' for model in auth_models.get('models', [])), auth_models
 assert status_code == '200', (status_code, status)
 assert status.get('installed') is False, status
+assert responses_code == '200', (responses_code, responses)
+assert responses.get('output', [{}])[0].get('content', [{}])[0].get('text') == 'INTEGRATION_OK', responses
+assert responses.get('usage', {}).get('input_tokens') == 11, responses
+assert responses.get('usage', {}).get('output_tokens') == 3, responses
+assert stream_code == '200', (stream_code, stream)
+assert 'response.output_text.delta' in stream and 'INTEGRATION_OK' in stream, stream
+assert 'response.completed' in stream and '"input_tokens":11' in stream and '"output_tokens":3' in stream, stream
+assert quota_code == '200', (quota_code, quota)
+assert quota.get('provider') == 'cursor' and quota.get('tier') == 'Pro', quota
+assert quota.get('remaining_quota_available') is False, quota
 assert false_code == '400', (false_code, confirm_false)
 assert confirm_false.get('installed') is False and 'explicit confirmation' in confirm_false.get('error', ''), confirm_false
 assert confused_code == '404', confused_code
-print('smoke_verified resource=200 unauth=401 quota_resource=404 auth_files=200 auth_models=200 status_installed=false confirm_false=400 path_confusion=404')
+print('smoke_verified resource=200 unauth=401 quota_resource=404 auth_files=200 auth_models=200 responses=200 stream=200 quota=200 status_installed=false confirm_false=400 path_confusion=404')
 PY
 
 if [ "$FULL_INSTALL" = "1" ]; then
@@ -206,9 +235,9 @@ if grep -q 'management registrar cliproxyapi-cursor failed' "$TMP/docker.log"; t
   echo 'management registrar failure found in container log' >&2
   exit 1
 fi
-if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.3.0' "$TMP/docker.log"; then
-  echo 'plugin registration log for cliproxyapi-cursor v0.3.0 not found' >&2
+if ! grep -q 'plugin registered plugin_id=cliproxyapi-cursor .* version=0.4.0' "$TMP/docker.log"; then
+  echo 'plugin registration log for cliproxyapi-cursor v0.4.0 not found' >&2
   exit 1
 fi
 
-echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.3.0 no_registrar_failures=true native_auth_files=200 native_auth_models=200'
+echo 'external_host_verified plugin_id=cliproxyapi-cursor version=0.4.0 no_registrar_failures=true native_auth_files=200 native_auth_models=200 responses=200 stream=200 quota=200'

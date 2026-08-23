@@ -207,13 +207,17 @@ func redactCursorError(text string) string {
 	return text
 }
 
-func cursorPromptArgs(_ Config, model, format string, stream bool, prompt string) []string {
-	args := []string{"-p", "--trust", "--mode", "ask", "--sandbox", "disabled", "--workspace", workspaceArgPlaceholder, "--model", model, "--output-format", format}
-	if stream {
-		args = append(args, "--stream-partial-output")
+func cursorPromptArgs(_ Config, model, prompt string) []string {
+	return []string{
+		"--print",
+		"--output-format", "json",
+		"--sandbox", "disabled",
+		"--trust",
+		"--mode", "ask",
+		"--workspace", workspaceArgPlaceholder,
+		"--model", model,
+		prompt,
 	}
-	args = append(args, prompt)
-	return args
 }
 
 var unsupportedToolKeys = map[string]struct{}{
@@ -431,6 +435,46 @@ func cursorText(raw map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func parseCursorJSONResult(result agentResult) (map[string]any, error) {
+	stdout := bytes.TrimSpace(result.Stdout)
+	if len(stdout) == 0 {
+		message := strings.TrimSpace(redactCursorError(string(result.Stderr)))
+		if message == "" {
+			message = "Cursor agent CLI returned empty stdout"
+		}
+		return nil, statusError("cursor_empty_stdout", message, http.StatusBadGateway)
+	}
+
+	var parsed map[string]any
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, statusError("cursor_json_parse", "Cursor agent JSON output was malformed", http.StatusBadGateway)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, statusError("cursor_json_parse", "Cursor agent JSON output contained trailing data", http.StatusBadGateway)
+	}
+	if isError, _ := parsed["is_error"].(bool); isError {
+		message := cursorText(parsed)
+		if message == "" {
+			message = strings.TrimSpace(redactCursorError(string(result.Stderr)))
+		}
+		if message == "" {
+			message = "Cursor agent reported an unsuccessful result"
+		}
+		return nil, statusError("cursor_agent_error", message, http.StatusBadGateway)
+	}
+	if cursorText(parsed) == "" {
+		message := strings.TrimSpace(redactCursorError(string(result.Stderr)))
+		if message == "" {
+			message = "Cursor agent JSON output contained no result text"
+		}
+		return nil, statusError("cursor_empty_result", message, http.StatusBadGateway)
+	}
+	return parsed, nil
 }
 
 func responsePayload(format, model, text string, usage map[string]any, created int64) ([]byte, error) {

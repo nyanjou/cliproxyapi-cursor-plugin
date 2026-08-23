@@ -12,7 +12,7 @@ import (
 )
 
 var pluginService = provider.New(hostTransport{})
-var pluginVersion = "0.3.0"
+var pluginVersion = "0.4.0"
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -152,11 +152,11 @@ func dispatch(method string, request []byte) (any, error) {
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 			return nil, errUnmarshal
 		}
-		headers, errStream := pluginService.ExecuteStream(ctx, req)
+		stream, errStream := pluginService.ExecuteStream(ctx, req)
 		if errStream != nil {
 			return nil, errStream
 		}
-		return map[string]any{"headers": headers}, nil
+		return map[string]any{"headers": stream.Headers, "chunks": stream.Chunks}, nil
 	case pluginabi.MethodExecutorCountTokens:
 		var req provider.ExecuteRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {

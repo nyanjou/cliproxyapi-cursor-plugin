@@ -178,68 +178,54 @@ func TestExecuteRejectsToolSchemasTruthfully(t *testing.T) {
 	}
 }
 
-func TestStreamDeduplicatesPartialsAndUsesTerminalResult(t *testing.T) {
+func TestStreamBuffersValidatedJSONIntoResponsesSSE(t *testing.T) {
 	agent := fakeAgent(t, `
 if [ "$1" = "models" ]; then echo 'auto - Auto'; exit 0; fi
 case "$*" in *'--sandbox enabled'*) echo sandbox-enabled >&2; exit 65;; esac
 case "$*" in *'--sandbox disabled'*) ;; *) echo sandbox-disabled-missing >&2; exit 66;; esac
-printf '%s\n' '{"type":"text","text":"Hel"}' '{"type":"text","text":"Hello"}' '{"type":"text","text":"Hello"}' '{"type":"result","result":"Hello!","usage":{"input_tokens":1,"output_tokens":1}}'
+case "$*" in *'--print --output-format json'*) ;; *) echo json-flags-missing >&2; exit 67;; esac
+case "$*" in *'stream-json'*) echo stream-json-not-allowed >&2; exit 68;; esac
+printf '%s\n' '{"type":"result","result":"Hello!","usage":{"inputTokens":3,"outputTokens":2}}'
 `)
-	host := &recordingHost{}
-	s := New(host)
-	cfg := DefaultConfig()
-	cfg.ExecutablePath = agent
-	cfg.Workspace = t.TempDir()
-	cfg.TimeoutSeconds = 2
-	cfg.MaxPromptBytes = 20000
-	if err := s.Configure(mustYAML(t, cfg)); err != nil {
-		t.Fatal(err)
-	}
-	headers, err := s.ExecuteStream(context.Background(), ExecuteRequest{StreamID: "s1", ExecutorRequest: pluginapi.ExecutorRequest{Model: "auto", SourceFormat: "openai-response", OriginalRequest: []byte(`{"input":"hi"}`)}})
+	s := newTestService(t, agent)
+	stream, err := s.ExecuteStream(context.Background(), ExecuteRequest{StreamID: "s1", ExecutorRequest: pluginapi.ExecutorRequest{Model: "auto", Format: "openai-response", SourceFormat: "openai-response", OriginalRequest: []byte(`{"input":"hi"}`)}})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	if ct := headers.Get("Content-Type"); ct != "application/x-ndjson" {
+	if ct := stream.Headers.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("content-type=%q", ct)
 	}
-	waitForHost(t, host, 3, 2*time.Second)
-	host.mu.Lock()
-	defer host.mu.Unlock()
-	joined := string(joinBytes(host.emits))
-	if strings.Contains(joined, "data:") || !strings.HasSuffix(joined, "\n") {
-		t.Fatalf("stream is not bare NDJSON: %q", joined)
-	}
-	if strings.Count(joined, `"delta":"Hel"`) != 1 || strings.Count(joined, `"delta":"lo"`) != 1 {
-		t.Fatalf("dedupe failed emits=%s", joined)
-	}
-	if !strings.Contains(joined, "Hello!") {
-		t.Fatalf("terminal result missing emits=%s", joined)
-	}
-	if host.closed != "" {
-		t.Fatalf("closed with error %q", host.closed)
+	joined := string(joinStreamChunks(stream.Chunks))
+	for _, want := range []string{"event: response.created", "event: response.output_text.delta", "event: response.completed", "Hello!", `"input_tokens":3`, `"output_tokens":2`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("stream missing %q: %s", want, joined)
+		}
 	}
 }
 
-func joinBytes(chunks [][]byte) []byte {
+func joinStreamChunks(chunks []pluginapi.ExecutorStreamChunk) []byte {
 	var out []byte
 	for _, c := range chunks {
-		out = append(out, c...)
+		out = append(out, c.Payload...)
 	}
 	return out
 }
 
-func waitForHost(t *testing.T, host *recordingHost, emits int, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		host.mu.Lock()
-		got := len(host.emits)
-		closed := host.closed
-		host.mu.Unlock()
-		if got >= emits || closed != "" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+func joinBytes(chunks [][]byte) []byte {
+	var out []byte
+	for _, chunk := range chunks {
+		out = append(out, chunk...)
+	}
+	return out
+}
+
+func TestCursorJSONResultUsesRedactedStderrWhenStdoutIsEmpty(t *testing.T) {
+	_, err := parseCursorJSONResult(agentResult{Stderr: []byte("Authorization: Bearer secret-token-12345")})
+	if err == nil {
+		t.Fatal("expected empty stdout error")
+	}
+	if strings.Contains(err.Error(), "secret-token") || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("stderr was not safely surfaced: %v", err)
 	}
 }
 

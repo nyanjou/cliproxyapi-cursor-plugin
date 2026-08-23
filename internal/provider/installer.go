@@ -28,6 +28,7 @@ const (
 	managementBasePath    = "/v0/management"
 	managementInstallPath = "/plugins/cursor/setup/install"
 	managementStatusPath  = "/plugins/cursor/setup/status"
+	managementQuotaPath   = "/plugins/cursor/quota"
 )
 
 type installerInfo struct {
@@ -107,6 +108,7 @@ func installerPlatform(goos, goarch string) (string, string, bool) {
 func (s *Service) RegisterManagement(_ context.Context, _ pluginapi.ManagementRegistrationRequest) (pluginapi.ManagementRegistrationResponse, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
+			{Method: http.MethodGet, Path: managementQuotaPath, Description: "Reports safe Cursor account metadata and usage observed by CLIProxyAPI.", Handler: s},
 			{Method: http.MethodGet, Path: managementStatusPath, Description: "Reports managed official Cursor Agent CLI installation status.", Handler: s},
 			{Method: http.MethodPost, Path: managementInstallPath, Menu: "Install official Cursor Agent CLI", Description: "Explicitly installs the official Cursor Agent CLI into the plugin runtime HOME.", Handler: s},
 		},
@@ -124,6 +126,12 @@ func (s *Service) HandleManagement(ctx context.Context, req pluginapi.Management
 		return htmlResponse(setupHTML()), nil
 	case req.Method == http.MethodGet && path == managementStatusPath:
 		return jsonResponse(http.StatusOK, s.InstallStatus()), nil
+	case req.Method == http.MethodGet && path == managementQuotaPath:
+		quota, err := s.CursorQuota(ctx)
+		if err != nil {
+			return jsonResponse(http.StatusBadGateway, map[string]any{"error": err.Error()}), nil
+		}
+		return jsonResponse(http.StatusOK, quota), nil
 	case req.Method == http.MethodPost && path == managementInstallPath:
 		var body struct {
 			Confirm bool `json:"confirm"`
@@ -156,7 +164,7 @@ func normalizeCursorManagementPath(raw string) (string, bool) {
 	if path == setupResourcePath || path == "/setup" {
 		return path, true
 	}
-	if path == managementStatusPath || path == managementInstallPath {
+	if path == managementStatusPath || path == managementInstallPath || path == managementQuotaPath {
 		return path, true
 	}
 	return "", false
